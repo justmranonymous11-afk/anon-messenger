@@ -209,13 +209,29 @@
   // ===========================================================
   // WebRTC: perfect negotiation pattern
   // ===========================================================
+  // STUN-only fallback used if /api/turn is unreachable or returns nothing.
+  // Without TURN, peers behind symmetric/strict NATs (corporate Wi-Fi,
+  // many mobile carriers) cannot establish a direct P2P connection.
+  const ICE_FALLBACK = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ];
+
+  async function fetchIceServers() {
+    try {
+      const res = await fetch('/api/turn', { cache: 'no-store' });
+      if (!res.ok) return ICE_FALLBACK;
+      const body = await res.json();
+      const list = Array.isArray(body && body.iceServers) ? body.iceServers : null;
+      return list && list.length ? list : ICE_FALLBACK;
+    } catch {
+      return ICE_FALLBACK;
+    }
+  }
+
   async function startPeerConnection() {
-    state.pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ],
-    });
+    const iceServers = await fetchIceServers();
+    state.pc = new RTCPeerConnection({ iceServers });
 
     state.pc.onicecandidate = (e) => {
       if (e.candidate) sendSignal({ kind: 'ice', candidate: e.candidate });

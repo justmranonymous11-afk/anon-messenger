@@ -23,12 +23,57 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 4040;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Optional Metered.ca TURN proxy. If both env vars are present, the server
+// will expose /api/turn which returns time-limited ICE servers (STUN+TURN).
+// If absent, /api/turn returns just public Google STUN — the app still works
+// for users behind permissive NATs but P2P will fail for strict NATs.
+const TURN_APP_SUBDOMAIN = process.env.METERED_APP_SUBDOMAIN || '';
+const TURN_API_KEY = process.env.METERED_API_KEY || '';
+const TURN_CACHE_MS = 5 * 60 * 1000;
+let turnCache = { expires: 0, body: null };
+
+const STUN_FALLBACK = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+function fetchTurnFromMetered() {
+  return new Promise((resolve) => {
+    if (!TURN_APP_SUBDOMAIN || !TURN_API_KEY) return resolve(STUN_FALLBACK);
+    const url = `https://${TURN_APP_SUBDOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(TURN_API_KEY)}`;
+    const req = https.get(url, { timeout: 4000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(STUN_FALLBACK); }
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { buf += c; if (buf.length > 64 * 1024) req.destroy(); });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(buf);
+          if (Array.isArray(parsed) && parsed.length > 0) resolve(parsed);
+          else resolve(STUN_FALLBACK);
+        } catch { resolve(STUN_FALLBACK); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(STUN_FALLBACK); });
+    req.on('error', () => resolve(STUN_FALLBACK));
+  });
+}
+
+async function getIceServers() {
+  const now = Date.now();
+  if (turnCache.body && now < turnCache.expires) return turnCache.body;
+  const body = await fetchTurnFromMetered();
+  turnCache = { expires: now + TURN_CACHE_MS, body };
+  return body;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -43,9 +88,21 @@ const MIME = {
 // =================================================================
 // Static file server
 // =================================================================
-const httpServer = http.createServer((req, res) => {
+const httpServer = http.createServer(async (req, res) => {
   try {
     const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+    if (urlPath === '/api/turn') {
+      const iceServers = await getIceServers();
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(JSON.stringify({ iceServers }));
+      return;
+    }
+
     let filePath = path.join(PUBLIC_DIR, urlPath === '/' ? 'index.html' : urlPath);
 
     if (!filePath.startsWith(PUBLIC_DIR)) {
