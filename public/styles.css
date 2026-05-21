@@ -263,6 +263,21 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--bubble-in);
   border-bottom-left-radius: 6px;
 }
+/* Sender label shown for incoming group messages */
+.bubble .sender {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-3);
+  margin-bottom: 2px;
+  letter-spacing: 0.2px;
+}
+/* Inline rows so the sender label sits above content cleanly */
+.bubble .audio-row,
+.bubble .file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .bubble .time {
   font-size: 10.5px; color: rgba(255,255,255,0.5);
   margin-left: 8px; float: right;

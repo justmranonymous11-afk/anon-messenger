@@ -1,7 +1,7 @@
 {
   "name": "anon-messenger",
   "version": "1.0.0",
-  "description": "Anonymous, end-to-end encrypted messenger with chat and calls between 2 users. Telegram-style UI.",
+  "description": "Anonymous, end-to-end encrypted messenger. 1-on-1 chat + calls, or small group chat up to 5 peers via mesh WebRTC. Telegram-style UI.",
   "private": true,
   "main": "server.js",
   "scripts": {

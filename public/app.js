@@ -60,36 +60,51 @@
   };
 
   // ---------- Application state ----------
+  // Multi-peer mesh: state.peers is a Map<peerId, Peer>. For a 2-person chat,
+  // it has one entry; for a group, up to 4 entries (MAX_PEERS - 1).
+  const MAX_PEERS_TOTAL = 5;
   const state = {
     ws: null,
-    pc: null,                 // RTCPeerConnection
-    dc: null,                 // RTCDataChannel for chat
+    myId: null,               // server-assigned id for THIS connection
     room: null,
-    isInitiator: false,
-    polite: false,            // perfect-negotiation role
-    makingOffer: false,
-    ignoreOffer: false,
-    myKeyPair: null,
-    sessionKey: null,
-    safetyNumber: null,
+    myKeyPair: null,          // ECDH key pair, shared across all peer derivations
+    peers: new Map(),         // peerId -> Peer
+    // 1-on-1 call (only when peers.size === 1). Group calls = future.
+    callPeerId: null,         // id of the peer we're calling
     localStream: null,
     callType: null,
     callActive: false,
     callTimerStart: 0,
     callTimerInt: null,
-    senders: [],              // local track senders
-    // multi-chunk reassembly
-    incomingBlobs: new Map(), // id -> { kind, dur, mime, total, chunks: [Uint8Array...] }
+    senders: [],
     // recording
     mediaRecorder: null,
     recordChunks: [],
     recordStart: 0,
     recordTimerInt: null,
     recordCancelled: false,
-    // session profiles (never persisted)
-    myProfile: { name: '', av: null },   // av: dataURL string or null
-    peerProfile: { name: '', av: null },
+    // your session profile (broadcast to all peers, wiped on leave)
+    myProfile: { name: '', av: null },
   };
+
+  function newPeer(id) {
+    return {
+      id,
+      pc: null,
+      dc: null,
+      sessionKey: null,
+      safetyNumber: null,
+      polite: false,
+      makingOffer: false,
+      ignoreOffer: false,
+      incomingBlobs: new Map(),
+      profile: { name: '', av: null },
+    };
+  }
+
+  function peerCount() { return state.peers.size; }
+  function isGroup() { return peerCount() >= 2; }
+  function getPeer(id) { return state.peers.get(id); }
 
   // Send chunks small enough to comfortably fit a DataChannel message
   // (16 KB is a safe cross-browser default).
@@ -127,17 +142,20 @@
     for (let i = 0; i < 6; i++) groups.push((view.getUint16(i * 2) % 10000).toString().padStart(4, '0'));
     return { key: aesKey, safetyNumber: groups.join(' ') };
   }
-  async function encryptBytes(bytes) {
+
+  // Encryption helpers — explicit key argument. In group mode each peer has
+  // its own pairwise AES-GCM key, so we must pass the right one.
+  async function encryptBytes(key, bytes) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, state.sessionKey, bytes);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes);
     return { iv: buf2b64(iv), ct: buf2b64(ct) };
   }
-  async function decryptBytes({ iv, ct }) {
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b642buf(iv) }, state.sessionKey, b642buf(ct));
+  async function decryptBytes(key, { iv, ct }) {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b642buf(iv) }, key, b642buf(ct));
     return new Uint8Array(pt);
   }
-  async function encryptText(plaintext) { return encryptBytes(enc.encode(plaintext)); }
-  async function decryptText(p) { return dec.decode(await decryptBytes(p)); }
+  async function encryptText(key, plaintext) { return encryptBytes(key, enc.encode(plaintext)); }
+  async function decryptText(key, p) { return dec.decode(await decryptBytes(key, p)); }
 
   // ===========================================================
   // Signaling (WebSocket)
@@ -158,54 +176,85 @@
     });
   }
 
-  function sendSignal(payload) {
+  function sendSignal(toId, payload) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: 'signal', payload }));
+      state.ws.send(JSON.stringify({ type: 'signal', to: toId, payload }));
     }
   }
 
   async function handleSignal(msg) {
     switch (msg.type) {
-      case 'joined':
-        state.isInitiator = msg.initiator;
-        state.polite = !msg.initiator;
-        if (msg.peers === 1) {
-          showSystemMessage('Waiting for the other person to join…');
+      case 'joined': {
+        state.myId = msg.you;
+        if (!state.myKeyPair) state.myKeyPair = await generateKeyPair();
+        const existing = Array.isArray(msg.peers) ? msg.peers : [];
+        if (existing.length === 0) {
+          showSystemMessage('Waiting for others to join…');
           setStatus('waiting', false);
+        } else {
+          showSystemMessage(`Connecting to ${existing.length} peer${existing.length>1?'s':''}…`);
+          setStatus('connecting…', false);
+          for (const peerId of existing) {
+            await ensurePeerConnection(peerId, /*weInitiate=*/true);
+          }
         }
+        updateHeaderForPeers();
         break;
+      }
 
-      case 'ready':
-        showSystemMessage('Peer joined. Establishing secure channel…');
-        await startPeerConnection();
+      case 'peer-joined': {
+        if (!msg.id || msg.id === state.myId) return;
+        // Existing peer reacts to a newcomer. The peer with the LEXICOGRAPHICALLY
+        // smaller id is the "impolite" one (initiator). This is symmetric so both
+        // sides compute the same role assignment.
+        const weInitiate = state.myId < msg.id;
+        await ensurePeerConnection(msg.id, weInitiate);
+        showSystemMessage('A peer joined the room.');
+        updateHeaderForPeers();
         break;
+      }
 
       case 'signal': {
+        const from = msg.from;
         const p = msg.payload;
-        if (!p || !state.pc) return;
+        if (!from || !p) return;
+        let peer = getPeer(from);
+        // If we somehow receive a signal from an unknown peer (race condition),
+        // start the connection — they're polite to us.
+        if (!peer) {
+          const weInitiate = state.myId < from;
+          await ensurePeerConnection(from, weInitiate);
+          peer = getPeer(from);
+          if (!peer) return;
+        }
         if (p.kind === 'description') {
-          await onRemoteDescription(p.description);
+          await onRemoteDescription(peer, p.description);
         } else if (p.kind === 'ice' && p.candidate) {
-          try { await state.pc.addIceCandidate(p.candidate); }
-          catch (e) { if (!state.ignoreOffer) console.warn('ICE add failed', e); }
+          try { await peer.pc.addIceCandidate(p.candidate); }
+          catch (e) { if (!peer.ignoreOffer) console.warn('ICE add failed', e); }
         } else if (p.kind === 'pubkey') {
-          await onPeerPublicKey(p.key);
+          await onPeerPublicKey(peer, p.key);
         }
         break;
       }
 
-      case 'peer-left':
-        showSystemMessage('Peer disconnected.');
-        setStatus('disconnected', false);
-        teardownCall();
-        if (state.dc) try { state.dc.close(); } catch {}
-        if (state.pc) try { state.pc.close(); } catch {}
-        state.pc = null; state.dc = null; state.sessionKey = null;
-        state.peerProfile = { name: '', av: null };
-        applyPeerProfile(state.peerProfile);
-        disableComposer();
-        setBanner('Peer left. The session is closed.', 'warning');
+      case 'peer-left': {
+        const peer = getPeer(msg.id);
+        if (!peer) return;
+        showSystemMessage(`${peer.profile.name || 'A peer'} left.`);
+        try { peer.dc && peer.dc.close(); } catch {}
+        try { peer.pc && peer.pc.close(); } catch {}
+        // If we were in a 1-on-1 call with this peer, tear it down.
+        if (state.callPeerId === msg.id) teardownCall();
+        state.peers.delete(msg.id);
+        updateHeaderForPeers();
+        if (peerCount() === 0) {
+          setStatus('alone', false);
+          setBanner('Everyone left. Waiting for others to join…', 'info');
+          disableComposer();
+        }
         break;
+      }
 
       case 'error':
         toast(msg.error);
@@ -236,21 +285,31 @@
     }
   }
 
-  async function startPeerConnection() {
+  async function ensurePeerConnection(peerId, weInitiate) {
+    if (getPeer(peerId)) return getPeer(peerId);
+    const peer = newPeer(peerId);
+    peer.polite = !weInitiate;
+    state.peers.set(peerId, peer);
+
     const iceServers = await fetchIceServers();
-    state.pc = new RTCPeerConnection({ iceServers });
+    peer.pc = new RTCPeerConnection({ iceServers });
 
-    state.pc.onicecandidate = (e) => {
-      if (e.candidate) sendSignal({ kind: 'ice', candidate: e.candidate });
+    peer.pc.onicecandidate = (e) => {
+      if (e.candidate) sendSignal(peerId, { kind: 'ice', candidate: e.candidate });
     };
 
-    state.pc.onconnectionstatechange = () => {
-      const st = state.pc.connectionState;
-      if (st === 'connected') setStatus('online', true);
-      else if (st === 'failed' || st === 'disconnected' || st === 'closed') setStatus(st, false);
+    peer.pc.onconnectionstatechange = () => {
+      const st = peer.pc.connectionState;
+      if (st === 'failed' || st === 'closed') {
+        // Note: don't auto-remove on 'disconnected' (transient).
+        // We'll get an explicit peer-left from the server.
+      }
+      updateHeaderForPeers();
     };
 
-    state.pc.ontrack = (e) => {
+    peer.pc.ontrack = (e) => {
+      // In 1-on-1 calls only (current implementation). Group video = future.
+      if (peerCount() > 1) return;
       const remoteVideo = $('remote-video');
       if (!remoteVideo.srcObject) remoteVideo.srcObject = new MediaStream();
       const ms = remoteVideo.srcObject;
@@ -258,40 +317,39 @@
       ms.addTrack(e.track);
     };
 
-    // Perfect negotiation: this fires whenever local config changes (DC added, tracks added, etc.)
-    state.pc.onnegotiationneeded = async () => {
+    peer.pc.onnegotiationneeded = async () => {
       try {
-        state.makingOffer = true;
-        await state.pc.setLocalDescription();
-        sendSignal({ kind: 'description', description: state.pc.localDescription });
+        peer.makingOffer = true;
+        await peer.pc.setLocalDescription();
+        sendSignal(peerId, { kind: 'description', description: peer.pc.localDescription });
       } catch (e) {
         console.error('negotiation error:', e);
       } finally {
-        state.makingOffer = false;
+        peer.makingOffer = false;
       }
     };
 
-    if (state.isInitiator) {
-      const dc = state.pc.createDataChannel('chat', { ordered: true });
-      setupDataChannel(dc);
-      // creating the DC triggers onnegotiationneeded automatically
+    if (weInitiate) {
+      const dc = peer.pc.createDataChannel('chat', { ordered: true });
+      setupDataChannel(peer, dc);
     } else {
-      state.pc.ondatachannel = (ev) => setupDataChannel(ev.channel);
+      peer.pc.ondatachannel = (ev) => setupDataChannel(peer, ev.channel);
     }
 
-    state.myKeyPair = await generateKeyPair();
+    if (!state.myKeyPair) state.myKeyPair = await generateKeyPair();
     const pubB64 = await exportPublicKey(state.myKeyPair);
-    sendSignal({ kind: 'pubkey', key: pubB64 });
+    sendSignal(peerId, { kind: 'pubkey', key: pubB64 });
+
+    return peer;
   }
 
-  async function onRemoteDescription(description) {
-    const pc = state.pc;
+  async function onRemoteDescription(peer, description) {
+    const pc = peer.pc;
     const offerCollision =
-      description.type === 'offer' && (state.makingOffer || pc.signalingState !== 'stable');
-    state.ignoreOffer = !state.polite && offerCollision;
-    if (state.ignoreOffer) return;
+      description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+    peer.ignoreOffer = !peer.polite && offerCollision;
+    if (peer.ignoreOffer) return;
     if (offerCollision) {
-      // Polite peer: roll back so we can accept the incoming offer.
       await Promise.all([
         pc.setLocalDescription({ type: 'rollback' }).catch(() => {}),
         pc.setRemoteDescription(description),
@@ -301,67 +359,78 @@
     }
     if (description.type === 'offer') {
       await pc.setLocalDescription();
-      sendSignal({ kind: 'description', description: pc.localDescription });
+      sendSignal(peer.id, { kind: 'description', description: pc.localDescription });
     }
   }
 
-  async function onPeerPublicKey(b64) {
+  async function onPeerPublicKey(peer, b64) {
     const peerPub = await importPeerPublicKey(b64);
     const { key, safetyNumber } = await deriveSessionKey(state.myKeyPair.privateKey, peerPub);
-    state.sessionKey = key;
-    state.safetyNumber = safetyNumber;
-    setBanner(`Encrypted • Safety number: ${safetyNumber}`, 'ok');
+    peer.sessionKey = key;
+    peer.safetyNumber = safetyNumber;
+    updateSecurityBanner();
     enableChatIfReady();
   }
 
-  function setupDataChannel(dc) {
-    state.dc = dc;
+  function setupDataChannel(peer, dc) {
+    peer.dc = dc;
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 64 * 1024;
-    dc.onopen = enableChatIfReady;
-    dc.onclose = disableComposer;
-    dc.onmessage = (ev) => onDcMessage(ev.data);
+    dc.onopen = () => { enableChatIfReady(); sendMyProfileTo(peer); };
+    dc.onclose = () => { updateHeaderForPeers(); };
+    dc.onmessage = (ev) => onDcMessage(peer, ev.data);
   }
 
-  async function onDcMessage(data) {
+  function updateSecurityBanner() {
+    const connectedKeys = Array.from(state.peers.values()).filter(p => p.sessionKey).length;
+    if (connectedKeys === 0) {
+      setBanner('Verifying secure channel…', 'info');
+    } else if (connectedKeys === peerCount()) {
+      setBanner(`🔒 Encrypted with ${connectedKeys} peer${connectedKeys>1?'s':''}`, 'ok');
+    } else {
+      setBanner(`🔒 ${connectedKeys}/${peerCount()} peers encrypted…`, 'info');
+    }
+  }
+
+  async function onDcMessage(peer, data) {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     try {
       switch (msg.t) {
         case 'msg': {
-          const text = await decryptText(msg.p);
-          renderMessage({ id: msg.id, kind: 'text', text }, 'in');
+          const text = await decryptText(peer.sessionKey, msg.p);
+          renderMessage({ id: msg.id, kind: 'text', text, from: peer }, 'in');
           return;
         }
         case 'sticker':
-          renderMessage({ id: msg.id, kind: 'sticker', sticker: msg.s }, 'in');
+          renderMessage({ id: msg.id, kind: 'sticker', sticker: msg.s, from: peer }, 'in');
           return;
         case 'audio': {
-          const bytes = await decryptBytes(msg.p);
+          const bytes = await decryptBytes(peer.sessionKey, msg.p);
           const blob = new Blob([bytes], { type: msg.mime || 'audio/webm' });
-          renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: msg.dur }, 'in');
+          renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: msg.dur, from: peer }, 'in');
           return;
         }
         case 'msg-del':
           markMessageDeleted(msg.id);
           return;
         case 'blob-meta':
-          state.incomingBlobs.set(msg.id, {
+          peer.incomingBlobs.set(msg.id, {
             kind: msg.kind, name: msg.name || '', dur: msg.dur, mime: msg.mime,
             total: msg.total, chunks: [],
           });
           return;
         case 'blob-chunk': {
-          const entry = state.incomingBlobs.get(msg.id);
+          const entry = peer.incomingBlobs.get(msg.id);
           if (!entry) return;
-          const bytes = await decryptBytes(msg.p);
+          const bytes = await decryptBytes(peer.sessionKey, msg.p);
           entry.chunks[msg.idx] = bytes;
           return;
         }
         case 'blob-end': {
-          const entry = state.incomingBlobs.get(msg.id);
+          const entry = peer.incomingBlobs.get(msg.id);
           if (!entry) return;
-          state.incomingBlobs.delete(msg.id);
+          peer.incomingBlobs.delete(msg.id);
           if (entry.chunks.length !== entry.total || entry.chunks.some(c => !c)) {
             console.warn('Incomplete blob', msg.id); return;
           }
@@ -372,35 +441,42 @@
           for (const c of entry.chunks) { merged.set(c, off); off += c.length; }
           const blob = new Blob([merged], { type: entry.mime || 'application/octet-stream' });
           if (entry.kind === 'audio') {
-            renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: entry.dur }, 'in');
+            renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: entry.dur, from: peer }, 'in');
           } else if (entry.kind === 'file') {
             const url = URL.createObjectURL(blob);
             const isImage = (entry.mime || '').startsWith('image/');
             renderMessage({
               id: msg.id, kind: isImage ? 'image' : 'file',
-              url, name: entry.name, mime: entry.mime, size: totalLen,
+              url, name: entry.name, mime: entry.mime, size: totalLen, from: peer,
             }, 'in');
           }
           return;
         }
         case 'profile': {
           try {
-            const plain = await decryptText(msg.p);
+            const plain = await decryptText(peer.sessionKey, msg.p);
             const obj = JSON.parse(plain);
-            applyPeerProfile({ name: String(obj.name || '').slice(0, 40), av: obj.av || null });
+            peer.profile = { name: String(obj.name || '').slice(0, 40), av: obj.av || null };
+            updateHeaderForPeers();
           } catch (e) { console.warn('Bad profile', e); }
           return;
         }
+        // Calls — only meaningful when we're 1-on-1 (peerCount === 1).
         case 'call-invite':
+          if (peerCount() > 1) { /* ignore in group mode */ return; }
+          state.callPeerId = peer.id;
           showIncomingCall(msg.callType);
           return;
         case 'call-accept':
+          if (peer.id !== state.callPeerId) return;
           onCallAccepted();
           return;
         case 'call-decline':
+          if (peer.id !== state.callPeerId) return;
           onCallDeclined();
           return;
         case 'call-end':
+          if (peer.id !== state.callPeerId) return;
           teardownCall();
           showSystemMessage('Call ended.');
           return;
@@ -408,13 +484,25 @@
     } catch (e) { console.warn('DC handler error', e); }
   }
 
+  // Any peer connected = chat is usable.
+  function anyPeerReady() {
+    for (const p of state.peers.values())
+      if (p.dc && p.dc.readyState === 'open' && p.sessionKey) return true;
+    return false;
+  }
+
   function enableChatIfReady() {
-    if (state.dc && state.dc.readyState === 'open' && state.sessionKey) {
-      ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn','audio-call-btn','video-call-btn']
-        .forEach(id => { const el = $(id); if (el) el.disabled = false; });
+    const ready = anyPeerReady();
+    const composerIds = ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn'];
+    composerIds.forEach(id => { const el = $(id); if (el) el.disabled = !ready; });
+    // Call buttons: only available when exactly 1 peer (1-on-1 mode).
+    const callable = ready && peerCount() === 1;
+    const audio = $('audio-call-btn'); if (audio) audio.disabled = !callable;
+    const video = $('video-call-btn'); if (video) video.disabled = !callable;
+    if (ready) {
       $('msg-input').focus();
       setStatus('online', true);
-      sendMyProfile();
+      updateSecurityBanner();
     }
   }
   function disableComposer() {
@@ -422,29 +510,59 @@
       .forEach(id => { const el = $(id); if (el) el.disabled = true; });
   }
 
-  function dcSend(obj) {
-    if (state.dc && state.dc.readyState === 'open') {
-      state.dc.send(JSON.stringify(obj));
+  // Send to a SPECIFIC peer's data channel (JSON).
+  function dcSendTo(peer, obj) {
+    if (peer.dc && peer.dc.readyState === 'open') {
+      peer.dc.send(JSON.stringify(obj));
       return true;
     }
     return false;
   }
 
-  // Send large bytes as encrypted chunks. onProgress(fraction 0..1) optional.
-  async function dcSendBlob(kind, bytes, meta = {}, onProgress = null) {
+  // Send the same payload to every peer with an open DC, encrypting per-peer
+  // for `p` fields (caller already produced peer-specific ciphertext).
+  // For simple non-encrypted broadcasts, use this.
+  function dcBroadcastPlain(obj) {
+    let sent = 0;
+    for (const peer of state.peers.values()) {
+      if (dcSendTo(peer, obj)) sent++;
+    }
+    return sent;
+  }
+
+  // Encrypt the same plaintext separately for each peer (pairwise keys),
+  // then send the corresponding ciphertext to each peer.
+  // Returns the number of peers we delivered to.
+  async function dcBroadcastEncryptedText(plaintext, baseMessage) {
+    let sent = 0;
+    for (const peer of state.peers.values()) {
+      if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+      const p = await encryptText(peer.sessionKey, plaintext);
+      dcSendTo(peer, { ...baseMessage, p });
+      sent++;
+    }
+    return sent;
+  }
+
+  // Send large bytes as encrypted chunks — to ALL connected peers.
+  async function dcBroadcastBlob(kind, bytes, meta = {}, onProgress = null) {
     const id = randId();
     const total = Math.ceil(bytes.length / CHUNK_BYTES);
-    dcSend({ t: 'blob-meta', id, kind, total, ...meta });
+    dcBroadcastPlain({ t: 'blob-meta', id, kind, total, ...meta });
     for (let i = 0; i < total; i++) {
       const chunk = bytes.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
-      const p = await encryptBytes(chunk);
-      while (state.dc.bufferedAmount > 4 * 1024 * 1024) {
-        await new Promise(r => setTimeout(r, 50));
+      // Encrypt once per peer (different keys), then send to each.
+      for (const peer of state.peers.values()) {
+        if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+        while (peer.dc.bufferedAmount > 4 * 1024 * 1024) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+        const p = await encryptBytes(peer.sessionKey, chunk);
+        dcSendTo(peer, { t: 'blob-chunk', id, idx: i, p });
       }
-      dcSend({ t: 'blob-chunk', id, idx: i, p });
       if (onProgress) onProgress((i + 1) / total);
     }
-    dcSend({ t: 'blob-end', id });
+    dcBroadcastPlain({ t: 'blob-end', id });
     return id;
   }
 
@@ -456,7 +574,7 @@
   }
 
   async function sendFiles(fileList) {
-    if (!state.sessionKey) { toast('Not connected yet'); return; }
+    if (!anyPeerReady()) { toast('Not connected yet'); return; }
     for (const file of fileList) {
       if (file.size > MAX_FILE_BYTES) {
         toast(`"${file.name}" exceeds ${formatBytes(MAX_FILE_BYTES)} limit`);
@@ -472,7 +590,7 @@
       const placeholder = document.querySelector(`.bubble[data-upload-id="${CSS.escape(placeholderId)}"]`);
       const progressEl = placeholder ? placeholder.querySelector('.file-progress') : null;
       try {
-        await dcSendBlob('file', bytes, { name: file.name, mime: file.type || 'application/octet-stream' },
+        await dcBroadcastBlob('file', bytes, { name: file.name, mime: file.type || 'application/octet-stream' },
           (frac) => { if (progressEl) progressEl.style.setProperty('--p', Math.round(frac * 100) + '%'); });
         // Replace the placeholder with the final bubble
         if (placeholder) {
@@ -496,33 +614,77 @@
   // Session profile (name + avatar — wiped on leave, never persisted)
   // ===========================================================
   async function sendMyProfile() {
-    if (!state.dc || state.dc.readyState !== 'open' || !state.sessionKey) return;
     const payload = JSON.stringify({
       name: state.myProfile.name || '',
       av: state.myProfile.av || null,
     });
     try {
-      const p = await encryptText(payload);
-      dcSend({ t: 'profile', p });
-    } catch (e) { console.warn('profile send failed', e); }
+      await dcBroadcastEncryptedText(payload, { t: 'profile' });
+    } catch (e) { console.warn('profile broadcast failed', e); }
   }
 
-  function applyPeerProfile(prof) {
-    state.peerProfile = prof;
+  async function sendMyProfileTo(peer) {
+    if (!peer.dc || peer.dc.readyState !== 'open' || !peer.sessionKey) return;
+    try {
+      const payload = JSON.stringify({
+        name: state.myProfile.name || '',
+        av: state.myProfile.av || null,
+      });
+      const p = await encryptText(peer.sessionKey, payload);
+      dcSendTo(peer, { t: 'profile', p });
+    } catch (e) { console.warn('profile send to peer failed', e); }
+  }
+
+  // Update the chat header to reflect current peers.
+  // - 0 peers: "Waiting for peer"
+  // - 1 peer (1-on-1): show that peer's avatar + name
+  // - 2+ peers (group): show stack of avatars + "Group · N peers"
+  function updateHeaderForPeers() {
     const nameEl = document.querySelector('.peer-name');
     const avEl = $('peer-avatar');
-    const displayName = (prof.name && prof.name.trim()) ? prof.name.trim() : 'Anonymous peer';
-    if (nameEl) nameEl.textContent = displayName;
-    if (avEl) {
-      if (prof.av) {
-        avEl.style.backgroundImage = `url(${prof.av})`;
-        avEl.style.backgroundSize = 'cover';
-        avEl.style.backgroundPosition = 'center';
-        avEl.textContent = '';
-      } else {
+    const statusEl = $('peer-status');
+    const count = peerCount();
+
+    if (count === 0) {
+      if (nameEl) nameEl.textContent = 'Waiting for peers…';
+      if (avEl) {
         avEl.style.backgroundImage = '';
-        avEl.textContent = (displayName[0] || '?').toUpperCase();
+        avEl.textContent = '?';
       }
+      return;
+    }
+
+    if (count === 1) {
+      const peer = state.peers.values().next().value;
+      const displayName = (peer.profile.name && peer.profile.name.trim())
+        ? peer.profile.name.trim() : 'Anonymous peer';
+      if (nameEl) nameEl.textContent = displayName;
+      if (avEl) {
+        if (peer.profile.av) {
+          avEl.style.backgroundImage = `url(${peer.profile.av})`;
+          avEl.style.backgroundSize = 'cover';
+          avEl.style.backgroundPosition = 'center';
+          avEl.textContent = '';
+        } else {
+          avEl.style.backgroundImage = '';
+          avEl.textContent = (displayName[0] || '?').toUpperCase();
+        }
+      }
+      return;
+    }
+
+    // Group mode
+    const names = Array.from(state.peers.values())
+      .map(p => p.profile.name?.trim() || 'Anonymous')
+      .slice(0, 3);
+    const more = count > 3 ? `, +${count - 3} more` : '';
+    if (nameEl) nameEl.textContent = `Group · ${names.join(', ')}${more}`;
+    if (statusEl && statusEl.textContent !== 'online') {
+      // status managed by call/connection state, not name
+    }
+    if (avEl) {
+      avEl.style.backgroundImage = '';
+      avEl.textContent = String(count + 1); // including you
     }
   }
 
@@ -625,28 +787,38 @@
     div.className = `bubble ${direction}`;
     div.dataset.id = m.id;
     div.dataset.kind = m.kind;
+    // Sender label for group-mode incoming messages.
+    let senderHeader = '';
+    if (direction === 'in' && isGroup() && m.from) {
+      const name = (m.from.profile.name || '').trim() || 'Anonymous';
+      senderHeader = `<div class="sender">${escapeHtml(name)}</div>`;
+    }
     if (m.kind === 'text') {
       div.dataset.text = m.text;
-      div.innerHTML = `${linkify(escapeHtml(m.text))}<span class="time">${nowTime()}</span>`;
+      div.innerHTML = `${senderHeader}${linkify(escapeHtml(m.text))}<span class="time">${nowTime()}</span>`;
     } else if (m.kind === 'sticker') {
       div.classList.add('sticker');
-      div.innerHTML = `<div class="sticker-emoji">${escapeHtml(m.sticker)}</div><span class="time">${nowTime()}</span>`;
+      div.innerHTML = `${senderHeader}<div class="sticker-emoji">${escapeHtml(m.sticker)}</div><span class="time">${nowTime()}</span>`;
     } else if (m.kind === 'audio') {
       div.classList.add('audio');
       const waveBars = Array.from({ length: 22 }, () => '<span></span>').join('');
       div.innerHTML = `
-        <button class="audio-play" type="button" aria-label="Play">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-        </button>
-        <div class="audio-info">
-          <div class="audio-waves">${waveBars}</div>
-          <div class="audio-duration">${formatDuration(m.duration || 0)}</div>
-        </div>
-        <span class="time">${nowTime()}</span>`;
+        ${senderHeader}
+        <div class="audio-row">
+          <button class="audio-play" type="button" aria-label="Play">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+          </button>
+          <div class="audio-info">
+            <div class="audio-waves">${waveBars}</div>
+            <div class="audio-duration">${formatDuration(m.duration || 0)}</div>
+          </div>
+          <span class="time">${nowTime()}</span>
+        </div>`;
       wireAudioBubble(div, m.audioUrl, m.duration);
     } else if (m.kind === 'image') {
       div.classList.add('image');
       div.innerHTML = `
+        ${senderHeader}
         <img src="${m.url}" alt="${escapeHtml(m.name || 'image')}" />
         <span class="time">${nowTime()}</span>`;
       const img = div.querySelector('img');
@@ -654,27 +826,33 @@
     } else if (m.kind === 'file') {
       div.classList.add('file');
       div.innerHTML = `
-        <div class="file-icon">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
-        </div>
-        <div class="file-meta">
-          <div class="file-name">${escapeHtml(m.name || 'file')}</div>
-          <div class="file-size">${formatBytes(m.size || 0)}</div>
-        </div>
-        <a class="file-dl" href="${m.url}" download="${escapeHtml(m.name || 'file')}" title="Download">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3v12l4-4 1.4 1.4L12 17.8 6.6 12.4 8 11l4 4V3zM5 19h14v2H5z"/></svg>
-        </a>`;
+        ${senderHeader}
+        <div class="file-row">
+          <div class="file-icon">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
+          </div>
+          <div class="file-meta">
+            <div class="file-name">${escapeHtml(m.name || 'file')}</div>
+            <div class="file-size">${formatBytes(m.size || 0)}</div>
+          </div>
+          <a class="file-dl" href="${m.url}" download="${escapeHtml(m.name || 'file')}" title="Download">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3v12l4-4 1.4 1.4L12 17.8 6.6 12.4 8 11l4 4V3zM5 19h14v2H5z"/></svg>
+          </a>
+        </div>`;
     } else if (m.kind === 'file-uploading') {
       div.classList.add('file');
       div.dataset.uploadId = m.id;
       div.innerHTML = `
-        <div class="file-icon">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
-        </div>
-        <div class="file-meta">
-          <div class="file-name">${escapeHtml(m.name || 'file')}</div>
-          <div class="file-size">${formatBytes(m.size || 0)} • Sending…</div>
-          <div class="file-progress" style="--p:0%"></div>
+        ${senderHeader}
+        <div class="file-row">
+          <div class="file-icon">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
+          </div>
+          <div class="file-meta">
+            <div class="file-name">${escapeHtml(m.name || 'file')}</div>
+            <div class="file-size">${formatBytes(m.size || 0)} • Sending…</div>
+            <div class="file-progress" style="--p:0%"></div>
+          </div>
         </div>`;
     }
     attachContextMenu(div, direction);
@@ -796,7 +974,7 @@
   $('ctx-delete-all').addEventListener('click', () => {
     if (!ctxTargetEl) return;
     const id = ctxTargetEl.dataset.id;
-    dcSend({ t: 'msg-del', id });
+    dcBroadcastPlain({ t: 'msg-del', id });
     markMessageDeleted(id);
     closeCtxMenu();
   });
@@ -817,13 +995,16 @@
     e.preventDefault();
     const input = $('msg-input');
     const text = input.value.trim();
-    if (!text || !state.sessionKey) return;
+    if (!text || !anyPeerReady()) return;
     try {
       const id = randId();
-      const p = await encryptText(text);
-      dcSend({ t: 'msg', id, p });
-      renderMessage({ id, kind: 'text', text }, 'out');
-      input.value = '';
+      const sent = await dcBroadcastEncryptedText(text, { t: 'msg', id });
+      if (sent > 0) {
+        renderMessage({ id, kind: 'text', text }, 'out');
+        input.value = '';
+      } else {
+        toast('No peers connected');
+      }
     } catch (err) {
       console.error(err); toast('Failed to send message');
     }
@@ -858,9 +1039,10 @@
   buildStickerGrid();
 
   function sendSticker(s) {
-    if (!state.sessionKey) return;
+    if (!anyPeerReady()) return;
     const id = randId();
-    if (dcSend({ t: 'sticker', id, s })) {
+    const sent = dcBroadcastPlain({ t: 'sticker', id, s });
+    if (sent > 0) {
       renderMessage({ id, kind: 'sticker', sticker: s }, 'out');
       $('sticker-panel').classList.add('hidden');
       $('sticker-btn').classList.remove('active');
@@ -921,17 +1103,20 @@
   }
 
   async function sendVoiceMessage(blob, duration) {
-    if (!state.sessionKey) return;
+    if (!anyPeerReady()) return;
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    // Render locally first (instant feedback)
     const localUrl = URL.createObjectURL(blob);
     if (bytes.length <= CHUNK_BYTES) {
       const id = randId();
-      const p = await encryptBytes(bytes);
-      dcSend({ t: 'audio', id, dur: duration, mime: blob.type, p });
+      // Encrypt+send per peer
+      for (const peer of state.peers.values()) {
+        if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+        const p = await encryptBytes(peer.sessionKey, bytes);
+        dcSendTo(peer, { t: 'audio', id, dur: duration, mime: blob.type, p });
+      }
       renderMessage({ id, kind: 'audio', audioUrl: localUrl, duration }, 'out');
     } else {
-      const id = await dcSendBlob('audio', bytes, { dur: duration, mime: blob.type });
+      const id = await dcBroadcastBlob('audio', bytes, { dur: duration, mime: blob.type });
       renderMessage({ id, kind: 'audio', audioUrl: localUrl, duration }, 'out');
     }
   }
@@ -1012,7 +1197,7 @@
       $('peer-avatar').style.backgroundImage = '';
       document.querySelector('.peer-name').textContent = 'Anonymous peer';
       applyMyProfile();
-      showSystemMessage(`Room "${code}" — anyone with this code (and only one other person) can join.`);
+      showSystemMessage(`Room "${code}" — anyone with this code can join (up to 5 people total).`);
       setBanner('Verifying secure channel…', 'info');
       setStatus('connecting…', false);
     } catch { toast('Could not reach server'); }
@@ -1026,16 +1211,17 @@
   function cleanupAndReturn() {
     try { state.ws && state.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
     try { state.ws && state.ws.close(); } catch {}
-    try { state.dc && state.dc.close(); } catch {}
-    try { state.pc && state.pc.close(); } catch {}
+    for (const peer of state.peers.values()) {
+      try { peer.dc && peer.dc.close(); } catch {}
+      try { peer.pc && peer.pc.close(); } catch {}
+    }
+    state.peers.clear();
     teardownCall();
     Object.assign(state, {
-      ws: null, pc: null, dc: null, room: null, isInitiator: false, polite: false,
-      makingOffer: false, ignoreOffer: false,
-      myKeyPair: null, sessionKey: null, safetyNumber: null,
-      incomingBlobs: new Map(),
+      ws: null, myId: null, room: null,
+      myKeyPair: null,
       myProfile: { name: '', av: null },
-      peerProfile: { name: '', av: null },
+      callPeerId: null,
     });
     $('messages').innerHTML = '';
     $('msg-input').value = '';
@@ -1060,26 +1246,31 @@
 
   async function startCall(type) {
     if (state.callActive) return;
-    if (!state.dc || state.dc.readyState !== 'open') {
+    if (peerCount() !== 1) {
+      toast('Calls are only available in 1-on-1 mode (group calls coming soon)');
+      return;
+    }
+    const peer = state.peers.values().next().value;
+    if (!peer || !peer.dc || peer.dc.readyState !== 'open') {
       toast('Peer not connected yet'); return;
     }
     try { state.localStream = await getMedia(type === 'video'); }
     catch { toast('Microphone/camera permission denied'); return; }
     state.callType = type;
-    addLocalTracks();
-    // onnegotiationneeded will fire automatically because addTrack() changed config.
-    dcSend({ t: 'call-invite', callType: type });
+    state.callPeerId = peer.id;
+    addLocalTracks(peer);
+    dcSendTo(peer, { t: 'call-invite', callType: type });
     showCallOverlay(type, 'Ringing…');
   }
 
-  function addLocalTracks() {
-    if (!state.localStream || !state.pc) return;
+  function addLocalTracks(peer) {
+    if (!state.localStream || !peer.pc) return;
     const localVideo = $('local-video');
     localVideo.srcObject = state.localStream;
-    state.senders.forEach(s => { try { state.pc.removeTrack(s); } catch {} });
+    state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     state.senders = [];
     state.localStream.getTracks().forEach(track => {
-      const sender = state.pc.addTrack(track, state.localStream);
+      const sender = peer.pc.addTrack(track, state.localStream);
       state.senders.push(sender);
     });
   }
@@ -1105,10 +1296,12 @@
 
   $('accept-btn').addEventListener('click', async () => {
     $('incoming-call').classList.add('hidden');
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    if (!peer) return;
     try { state.localStream = await getMedia(state.callType === 'video'); }
-    catch { toast('Permission denied'); dcSend({ t: 'call-decline' }); return; }
-    addLocalTracks();
-    dcSend({ t: 'call-accept' });
+    catch { toast('Permission denied'); dcSendTo(peer, { t: 'call-decline' }); return; }
+    addLocalTracks(peer);
+    dcSendTo(peer, { t: 'call-accept' });
     showCallOverlay(state.callType, 'Connected');
     startCallTimer();
     state.callActive = true;
@@ -1116,8 +1309,10 @@
 
   $('decline-btn').addEventListener('click', () => {
     $('incoming-call').classList.add('hidden');
-    dcSend({ t: 'call-decline' });
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    if (peer) dcSendTo(peer, { t: 'call-decline' });
     state.callType = null;
+    state.callPeerId = null;
   });
 
   function onCallAccepted() {
@@ -1147,10 +1342,12 @@
       state.localStream.getTracks().forEach(t => t.stop());
       state.localStream = null;
     }
-    if (state.pc) {
-      state.senders.forEach(s => { try { state.pc.removeTrack(s); } catch {} });
-      state.senders = [];
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    if (peer && peer.pc) {
+      state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     }
+    state.senders = [];
+    state.callPeerId = null;
     const lv = $('local-video'); lv.srcObject = null;
     const rv = $('remote-video'); rv.srcObject = null;
     hideCallOverlay();
@@ -1160,7 +1357,8 @@
   $('video-call-btn').addEventListener('click', () => startCall('video'));
 
   $('hangup-btn').addEventListener('click', () => {
-    dcSend({ t: 'call-end' });
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    if (peer) dcSendTo(peer, { t: 'call-end' });
     teardownCall();
     showSystemMessage('Call ended.');
   });
