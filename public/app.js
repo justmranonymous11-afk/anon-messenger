@@ -15,9 +15,10 @@
  *   {t:'msg-del',  id}                      delete a message by id (for both)
  *   {t:'sticker',  id, s}                   sticker (emoji string)
  *   {t:'audio',    id, dur, mime, p:{iv,ct}} encrypted audio blob (small)
- *   {t:'blob-meta', id, kind, dur, mime, total}   start of multi-chunk transfer
+ *   {t:'blob-meta', id, kind, name?, mime, total, dur?}   start of multi-chunk transfer
  *   {t:'blob-chunk', id, idx, p:{iv,ct}}    one encrypted chunk
  *   {t:'blob-end', id}                      end of multi-chunk transfer
+ *   {t:'profile',  p:{iv,ct}}                encrypted JSON {name, av} (session-only)
  *   {t:'call-invite', callType}             requesting a call
  *   {t:'call-accept'} / {t:'call-decline'} / {t:'call-end'}
  */
@@ -85,11 +86,15 @@
     recordStart: 0,
     recordTimerInt: null,
     recordCancelled: false,
+    // session profiles (never persisted)
+    myProfile: { name: '', av: null },   // av: dataURL string or null
+    peerProfile: { name: '', av: null },
   };
 
   // Send chunks small enough to comfortably fit a DataChannel message
   // (16 KB is a safe cross-browser default).
   const CHUNK_BYTES = 12 * 1024;
+  const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB
 
   // ===========================================================
   // Cryptography
@@ -196,6 +201,8 @@
         if (state.dc) try { state.dc.close(); } catch {}
         if (state.pc) try { state.pc.close(); } catch {}
         state.pc = null; state.dc = null; state.sessionKey = null;
+        state.peerProfile = { name: '', av: null };
+        applyPeerProfile(state.peerProfile);
         disableComposer();
         setBanner('Peer left. The session is closed.', 'warning');
         break;
@@ -339,7 +346,10 @@
           markMessageDeleted(msg.id);
           return;
         case 'blob-meta':
-          state.incomingBlobs.set(msg.id, { kind: msg.kind, dur: msg.dur, mime: msg.mime, total: msg.total, chunks: [] });
+          state.incomingBlobs.set(msg.id, {
+            kind: msg.kind, name: msg.name || '', dur: msg.dur, mime: msg.mime,
+            total: msg.total, chunks: [],
+          });
           return;
         case 'blob-chunk': {
           const entry = state.incomingBlobs.get(msg.id);
@@ -360,10 +370,25 @@
           const merged = new Uint8Array(totalLen);
           let off = 0;
           for (const c of entry.chunks) { merged.set(c, off); off += c.length; }
-          const blob = new Blob([merged], { type: entry.mime || 'audio/webm' });
+          const blob = new Blob([merged], { type: entry.mime || 'application/octet-stream' });
           if (entry.kind === 'audio') {
             renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: entry.dur }, 'in');
+          } else if (entry.kind === 'file') {
+            const url = URL.createObjectURL(blob);
+            const isImage = (entry.mime || '').startsWith('image/');
+            renderMessage({
+              id: msg.id, kind: isImage ? 'image' : 'file',
+              url, name: entry.name, mime: entry.mime, size: totalLen,
+            }, 'in');
           }
+          return;
+        }
+        case 'profile': {
+          try {
+            const plain = await decryptText(msg.p);
+            const obj = JSON.parse(plain);
+            applyPeerProfile({ name: String(obj.name || '').slice(0, 40), av: obj.av || null });
+          } catch (e) { console.warn('Bad profile', e); }
           return;
         }
         case 'call-invite':
@@ -385,19 +410,16 @@
 
   function enableChatIfReady() {
     if (state.dc && state.dc.readyState === 'open' && state.sessionKey) {
-      $('msg-input').disabled = false;
-      $('send-btn').disabled = false;
-      $('sticker-btn').disabled = false;
-      $('mic-btn').disabled = false;
-      $('audio-call-btn').disabled = false;
-      $('video-call-btn').disabled = false;
+      ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn','audio-call-btn','video-call-btn']
+        .forEach(id => { const el = $(id); if (el) el.disabled = false; });
       $('msg-input').focus();
       setStatus('online', true);
+      sendMyProfile();
     }
   }
   function disableComposer() {
-    ['msg-input','send-btn','sticker-btn','mic-btn','audio-call-btn','video-call-btn']
-      .forEach(id => $(id).disabled = true);
+    ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn','audio-call-btn','video-call-btn']
+      .forEach(id => { const el = $(id); if (el) el.disabled = true; });
   }
 
   function dcSend(obj) {
@@ -408,23 +430,137 @@
     return false;
   }
 
-  // Send large bytes as encrypted chunks (audio messages).
-  async function dcSendBlob(kind, bytes, meta = {}) {
+  // Send large bytes as encrypted chunks. onProgress(fraction 0..1) optional.
+  async function dcSendBlob(kind, bytes, meta = {}, onProgress = null) {
     const id = randId();
     const total = Math.ceil(bytes.length / CHUNK_BYTES);
     dcSend({ t: 'blob-meta', id, kind, total, ...meta });
     for (let i = 0; i < total; i++) {
       const chunk = bytes.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
       const p = await encryptBytes(chunk);
-      // Backpressure: wait if buffer is too full
       while (state.dc.bufferedAmount > 4 * 1024 * 1024) {
         await new Promise(r => setTimeout(r, 50));
       }
       dcSend({ t: 'blob-chunk', id, idx: i, p });
+      if (onProgress) onProgress((i + 1) / total);
     }
     dcSend({ t: 'blob-end', id });
     return id;
   }
+
+  function formatBytes(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+
+  async function sendFiles(fileList) {
+    if (!state.sessionKey) { toast('Not connected yet'); return; }
+    for (const file of fileList) {
+      if (file.size > MAX_FILE_BYTES) {
+        toast(`"${file.name}" exceeds ${formatBytes(MAX_FILE_BYTES)} limit`);
+        continue;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      // Local placeholder bubble with progress
+      const placeholderId = randId();
+      renderMessage({
+        id: placeholderId, kind: 'file-uploading',
+        name: file.name, size: file.size,
+      }, 'out');
+      const placeholder = document.querySelector(`.bubble[data-upload-id="${CSS.escape(placeholderId)}"]`);
+      const progressEl = placeholder ? placeholder.querySelector('.file-progress') : null;
+      try {
+        await dcSendBlob('file', bytes, { name: file.name, mime: file.type || 'application/octet-stream' },
+          (frac) => { if (progressEl) progressEl.style.setProperty('--p', Math.round(frac * 100) + '%'); });
+        // Replace the placeholder with the final bubble
+        if (placeholder) {
+          const url = URL.createObjectURL(new Blob([bytes], { type: file.type || 'application/octet-stream' }));
+          placeholder.remove();
+          const isImage = (file.type || '').startsWith('image/');
+          renderMessage({
+            id: placeholderId, kind: isImage ? 'image' : 'file',
+            url, name: file.name, mime: file.type, size: file.size,
+          }, 'out');
+        }
+      } catch (e) {
+        console.error('File send failed', e);
+        toast('File send failed');
+        if (placeholder) placeholder.remove();
+      }
+    }
+  }
+
+  // ===========================================================
+  // Session profile (name + avatar — wiped on leave, never persisted)
+  // ===========================================================
+  async function sendMyProfile() {
+    if (!state.dc || state.dc.readyState !== 'open' || !state.sessionKey) return;
+    const payload = JSON.stringify({
+      name: state.myProfile.name || '',
+      av: state.myProfile.av || null,
+    });
+    try {
+      const p = await encryptText(payload);
+      dcSend({ t: 'profile', p });
+    } catch (e) { console.warn('profile send failed', e); }
+  }
+
+  function applyPeerProfile(prof) {
+    state.peerProfile = prof;
+    const nameEl = document.querySelector('.peer-name');
+    const avEl = $('peer-avatar');
+    const displayName = (prof.name && prof.name.trim()) ? prof.name.trim() : 'Anonymous peer';
+    if (nameEl) nameEl.textContent = displayName;
+    if (avEl) {
+      if (prof.av) {
+        avEl.style.backgroundImage = `url(${prof.av})`;
+        avEl.style.backgroundSize = 'cover';
+        avEl.style.backgroundPosition = 'center';
+        avEl.textContent = '';
+      } else {
+        avEl.style.backgroundImage = '';
+        avEl.textContent = (displayName[0] || '?').toUpperCase();
+      }
+    }
+  }
+
+  // Resize an image File/Blob to <= side x side JPEG. Returns dataURL.
+  async function resizeImageFile(file, side = 128, quality = 0.82) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = reject;
+        i.src = url;
+      });
+      const ratio = Math.min(side / img.width, side / img.height, 1);
+      const w = Math.max(1, Math.round(img.width * ratio));
+      const h = Math.max(1, Math.round(img.height * ratio));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', quality);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function openProfileDialog() {
+    $('profile-name').value = state.myProfile.name || '';
+    const preview = $('profile-preview');
+    if (state.myProfile.av) {
+      preview.style.backgroundImage = `url(${state.myProfile.av})`;
+      preview.textContent = '';
+    } else {
+      preview.style.backgroundImage = '';
+      preview.textContent = (state.myProfile.name?.[0] || '?').toUpperCase();
+    }
+    $('profile-dialog').classList.remove('hidden');
+  }
+  function closeProfileDialog() { $('profile-dialog').classList.add('hidden'); }
 
   // ===========================================================
   // UI rendering
@@ -481,6 +617,38 @@
         </div>
         <span class="time">${nowTime()}</span>`;
       wireAudioBubble(div, m.audioUrl, m.duration);
+    } else if (m.kind === 'image') {
+      div.classList.add('image');
+      div.innerHTML = `
+        <img src="${m.url}" alt="${escapeHtml(m.name || 'image')}" />
+        <span class="time">${nowTime()}</span>`;
+      const img = div.querySelector('img');
+      img.addEventListener('click', () => window.open(m.url, '_blank'));
+    } else if (m.kind === 'file') {
+      div.classList.add('file');
+      div.innerHTML = `
+        <div class="file-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
+        </div>
+        <div class="file-meta">
+          <div class="file-name">${escapeHtml(m.name || 'file')}</div>
+          <div class="file-size">${formatBytes(m.size || 0)}</div>
+        </div>
+        <a class="file-dl" href="${m.url}" download="${escapeHtml(m.name || 'file')}" title="Download">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3v12l4-4 1.4 1.4L12 17.8 6.6 12.4 8 11l4 4V3zM5 19h14v2H5z"/></svg>
+        </a>`;
+    } else if (m.kind === 'file-uploading') {
+      div.classList.add('file');
+      div.dataset.uploadId = m.id;
+      div.innerHTML = `
+        <div class="file-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
+        </div>
+        <div class="file-meta">
+          <div class="file-name">${escapeHtml(m.name || 'file')}</div>
+          <div class="file-size">${formatBytes(m.size || 0)} • Sending…</div>
+          <div class="file-progress" style="--p:0%"></div>
+        </div>`;
     }
     attachContextMenu(div, direction);
     wrap.appendChild(div);
@@ -745,6 +913,52 @@
   $('recording-stop').addEventListener('click', () => stopRecording(false));
   $('recording-cancel').addEventListener('click', () => stopRecording(true));
 
+  // File attachments
+  $('attach-btn').addEventListener('click', () => {
+    if ($('attach-btn').disabled) return;
+    $('file-input').click();
+  });
+  $('file-input').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length) await sendFiles(files);
+  });
+
+  // Profile dialog
+  $('profile-btn').addEventListener('click', openProfileDialog);
+  $('profile-cancel').addEventListener('click', closeProfileDialog);
+  $('profile-pick').addEventListener('click', () => $('profile-avatar-input').click());
+  $('profile-avatar-input').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast('Pick an image'); return; }
+    try {
+      const dataUrl = await resizeImageFile(file, 128, 0.82);
+      const preview = $('profile-preview');
+      preview.style.backgroundImage = `url(${dataUrl})`;
+      preview.textContent = '';
+      preview.dataset.pending = dataUrl;
+    } catch { toast('Could not load image'); }
+  });
+  $('profile-clear').addEventListener('click', () => {
+    const preview = $('profile-preview');
+    preview.style.backgroundImage = '';
+    preview.dataset.pending = '';
+    preview.textContent = '?';
+  });
+  $('profile-save').addEventListener('click', () => {
+    const name = $('profile-name').value.trim().slice(0, 40);
+    const preview = $('profile-preview');
+    const pending = preview.dataset.pending;
+    state.myProfile.name = name;
+    if (pending === '') state.myProfile.av = null;
+    else if (pending) state.myProfile.av = pending;
+    closeProfileDialog();
+    sendMyProfile();
+    toast('Profile updated (session only)');
+  });
+
   // ===========================================================
   // Join flow
   // ===========================================================
@@ -760,12 +974,15 @@
     const code = $('room-input').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4,12}$/.test(code)) { toast('Room code must be 4–12 letters/digits'); return; }
     state.room = code;
+    state.myProfile = { name: ($('name-input').value || '').trim().slice(0, 40), av: null };
     location.hash = code;
     try {
       await connectSignaling();
       state.ws.send(JSON.stringify({ type: 'join', room: code }));
       showScreen('chat-screen');
       $('peer-avatar').textContent = code.charAt(0);
+      $('peer-avatar').style.backgroundImage = '';
+      document.querySelector('.peer-name').textContent = 'Anonymous peer';
       showSystemMessage(`Room "${code}" — anyone with this code (and only one other person) can join.`);
       setBanner('Verifying secure channel…', 'info');
       setStatus('connecting…', false);
@@ -788,11 +1005,15 @@
       makingOffer: false, ignoreOffer: false,
       myKeyPair: null, sessionKey: null, safetyNumber: null,
       incomingBlobs: new Map(),
+      myProfile: { name: '', av: null },
+      peerProfile: { name: '', av: null },
     });
     $('messages').innerHTML = '';
     $('msg-input').value = '';
+    $('name-input').value = '';
     disableComposer();
     $('sticker-panel').classList.add('hidden');
+    closeProfileDialog();
     location.hash = '';
     showScreen('join-screen');
   }

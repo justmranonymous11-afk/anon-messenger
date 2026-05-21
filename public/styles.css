@@ -304,6 +304,120 @@ button { font-family: inherit; cursor: pointer; }
 .audio-waves span.played { background: var(--accent-3); }
 .audio-duration { font-size: 11px; color: rgba(255,255,255,0.6); font-family: ui-monospace, monospace; }
 
+/* ============ File / Image bubbles ============ */
+.bubble.image {
+  padding: 4px;
+  max-width: 78%;
+}
+.bubble.image img {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  max-height: 360px;
+  object-fit: cover;
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+.bubble.image .time {
+  position: absolute;
+  right: 8px; bottom: 6px;
+  background: rgba(0,0,0,0.55);
+  color: white;
+  padding: 1px 7px; border-radius: 8px;
+  float: none; margin: 0; font-size: 11px;
+}
+.bubble.file {
+  display: flex; align-items: center; gap: 10px;
+  min-width: 220px; max-width: 320px;
+  padding: 10px 12px;
+}
+.bubble.file .file-icon {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.bubble.file .file-meta { flex: 1; min-width: 0; }
+.bubble.file .file-name {
+  font-size: 14px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bubble.file .file-size {
+  font-size: 11px; color: rgba(255,255,255,0.6);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+}
+.bubble.file .file-dl {
+  border: none; background: transparent; color: var(--accent-3);
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+  text-decoration: none;
+}
+.bubble.file .file-dl:hover { background: rgba(0,194,168,0.15); }
+.bubble.file .file-progress {
+  height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px;
+  overflow: hidden; margin-top: 6px;
+}
+.bubble.file .file-progress::before {
+  content: ""; display: block; height: 100%;
+  background: var(--accent-3);
+  width: var(--p, 0%);
+  transition: width .2s;
+}
+.bubble.file .time {
+  margin-left: 8px; align-self: flex-end;
+  font-size: 10.5px; color: rgba(255,255,255,0.5);
+  float: none;
+}
+
+/* ============ Profile dialog ============ */
+.profile-card {
+  max-width: 340px;
+  padding: 24px 24px 18px;
+}
+.profile-card .avatar.large {
+  margin: 0 auto 4px;
+  cursor: pointer;
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+}
+.profile-card .field { text-align: left; margin-top: 14px; margin-bottom: 0; }
+.profile-card .field label {
+  display: block; font-size: 12px; font-weight: 500;
+  color: var(--accent-3); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+}
+.profile-card input[type="text"] {
+  width: 100%;
+  background: var(--bg-3);
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.profile-card input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.profile-actions {
+  display: flex; gap: 8px; justify-content: center;
+  margin-top: 14px; flex-wrap: wrap;
+}
+.profile-buttons {
+  display: flex; gap: 10px; justify-content: flex-end;
+  margin-top: 18px;
+}
+.ghost-btn {
+  background: transparent; border: 1px solid rgba(255,255,255,0.15);
+  color: var(--text);
+  border-radius: 10px; padding: 10px 14px;
+  font-size: 14px; cursor: pointer;
+  transition: background .15s;
+}
+.ghost-btn:hover { background: var(--bg-3); }
+
 /* ============ Composer ============ */
 .composer {
   display: flex; gap: 6px; padding: 8px 10px;
@@ -562,11 +676,11 @@ button { font-family: inherit; cursor: pointer; }
 @media (max-width: 480px) {
   .join-card { padding: 24px 18px; }
 
-  /* Apple HIG recommends min 44pt touch targets; bump call/icon buttons. */
+  /* Bigger touch targets on phones */
   .chat-header { gap: 6px; padding-left: 8px; padding-right: 8px; }
-  .icon-btn { width: 44px; height: 44px; }
+  .icon-btn { width: 50px; height: 50px; }
+  .icon-btn svg { width: 26px; height: 26px; }
   .header-actions { gap: 2px; }
-  /* Make call buttons stand out: filled circle background */
   .header-actions .icon-btn {
     background: rgba(0,194,168,0.12);
     color: var(--accent-3);
@@ -574,6 +688,14 @@ button { font-family: inherit; cursor: pointer; }
   .header-actions .icon-btn:disabled {
     background: rgba(0,194,168,0.06);
   }
+
+  /* Composer too */
+  .composer { gap: 4px; padding: 8px 8px; }
+  .composer-icon { width: 48px; height: 48px; }
+  .composer-icon svg { width: 24px; height: 24px; }
+  .send-btn { width: 48px; height: 48px; }
+  .send-btn svg { width: 24px; height: 24px; }
+  .composer input { font-size: 16px; /* prevent iOS zoom on focus */ }
 
   /* Call overlay */
   #local-video {
