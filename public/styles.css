@@ -139,7 +139,7 @@ button { font-family: inherit; cursor: pointer; }
 .icon-btn {
   background: transparent; color: var(--text);
   border: none; border-radius: 50%;
-  width: 40px; height: 40px;
+  width: 44px; height: 44px;
   display: flex; align-items: center; justify-content: center;
   font-size: 20px;
   flex-shrink: 0;
@@ -172,13 +172,27 @@ button { font-family: inherit; cursor: pointer; }
 .peer-status { font-size: 12px; color: var(--text-dim); }
 .peer-status.online { color: var(--success); }
 
-.header-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Header action buttons (call, profile) — always tinted, obviously tappable */
+.header-actions .icon-btn {
+  background: rgba(0,194,168,0.12);
+  color: var(--accent-3);
+}
+.header-actions .icon-btn:disabled {
+  opacity: 0.75;
+  background: rgba(0,194,168,0.06);
+}
+.header-actions .icon-btn:not(:disabled):hover {
+  background: rgba(0,194,168,0.22);
+}
 
 /* Profile button: when set, becomes a visual representation of YOU */
 #profile-btn.has-profile {
   overflow: hidden;
-  background-color: var(--bg-3);
+  background-color: var(--bg-3) !important;
   border: 2px solid var(--accent-3);
+  padding: 0;
 }
 #profile-btn.has-profile .profile-initial {
   display: flex; align-items: center; justify-content: center;
@@ -188,16 +202,6 @@ button { font-family: inherit; cursor: pointer; }
   color: white;
   font-size: 17px;
   border-radius: 50%;
-}
-/* Make call-action buttons in the header always visible, even when disabled,
-   so users can see at a glance that calling is supported. */
-.header-actions .icon-btn:disabled {
-  opacity: 0.85;
-  background: rgba(0,194,168,0.08);
-  color: var(--accent-3);
-}
-.header-actions .icon-btn:not(:disabled) {
-  color: var(--accent-3);
 }
 
 .security-banner {
@@ -457,25 +461,29 @@ button { font-family: inherit; cursor: pointer; }
   min-width: 0;
 }
 .composer input:focus { outline: none; border-color: var(--accent); }
-.composer-icon { width: 40px; height: 40px; flex-shrink: 0; }
-/* Keep composer icon buttons visible even when disabled (waiting for peer) */
+.composer-icon {
+  width: 44px; height: 44px;
+  flex-shrink: 0;
+  background: rgba(0,194,168,0.10);
+  color: var(--accent-3);
+}
 .composer-icon:disabled {
-  opacity: 0.85;
+  opacity: 0.65;
   background: rgba(0,194,168,0.06);
   color: var(--accent-3);
 }
-.composer-icon:not(:disabled) {
-  color: var(--accent-3);
-}
+.composer-icon:not(:disabled):hover { background: rgba(0,194,168,0.20); }
 .send-btn {
-  width: 42px; height: 42px;
+  width: 44px; height: 44px;
   padding: 0;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  background: var(--accent);
+  color: white;
 }
 .send-btn:disabled {
-  opacity: 0.9;
+  opacity: 0.65;
   background: rgba(0,194,168,0.3);
   color: white;
 }
@@ -692,27 +700,19 @@ button { font-family: inherit; cursor: pointer; }
 @media (max-width: 480px) {
   .join-card { padding: 24px 18px; }
 
-  /* Bigger touch targets + bigger icons inside them */
+  /* Bigger touch targets + bigger icons inside */
   .chat-header { gap: 6px; padding-left: 8px; padding-right: 8px; }
-  .icon-btn { width: 48px; height: 48px; }
-  .icon-btn svg { width: 28px !important; height: 28px !important; }
-  .header-actions { gap: 4px; }
-  .header-actions .icon-btn {
-    background: rgba(0,194,168,0.12);
-    color: var(--accent-3);
-  }
-  .header-actions .icon-btn:disabled {
-    background: rgba(0,194,168,0.06);
-  }
-  #profile-btn.has-profile .profile-initial { font-size: 20px; }
+  .icon-btn { width: 52px; height: 52px; }
+  .icon-btn svg { width: 30px; height: 30px; }
+  .header-actions { gap: 6px; }
+  #profile-btn.has-profile .profile-initial { font-size: 22px; }
 
-  /* Composer too */
-  .composer { gap: 4px; padding: 8px 8px; }
-  .composer-icon { width: 48px; height: 48px; }
-  .composer-icon svg { width: 26px !important; height: 26px !important; }
-  .send-btn { width: 48px; height: 48px; }
-  .send-btn svg { width: 26px !important; height: 26px !important; }
-  .composer input { font-size: 16px; /* prevent iOS zoom on focus */ }
+  .composer { gap: 6px; padding: 10px 10px; }
+  .composer-icon { width: 50px; height: 50px; }
+  .composer-icon svg { width: 28px; height: 28px; }
+  .send-btn { width: 50px; height: 50px; }
+  .send-btn svg { width: 28px; height: 28px; }
+  .composer input { font-size: 16px; }
 
   /* Call overlay */
   #local-video {
