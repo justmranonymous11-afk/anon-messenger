@@ -33,10 +33,11 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // Optional Metered.ca TURN proxy. If both env vars are present, the server
 // will expose /api/turn which returns time-limited ICE servers (STUN+TURN).
-// If absent, /api/turn returns just public Google STUN — the app still works
-// for users behind permissive NATs but P2P will fail for strict NATs.
+// METERED_API_KEY = Secret Key from Metered Dashboard → Developers tab
+// (NOT the per-credential "apiKey" shown after creating a TURN credential).
+// If absent, /api/turn returns just public Google STUN.
 const TURN_APP_SUBDOMAIN = process.env.METERED_APP_SUBDOMAIN || '';
-const TURN_API_KEY = process.env.METERED_API_KEY || '';
+const METERED_SECRET_KEY = process.env.METERED_API_KEY || process.env.METERED_SECRET_KEY || '';
 const TURN_CACHE_MS = 5 * 60 * 1000;
 let turnCache = { expires: 0, body: null };
 
@@ -45,26 +46,55 @@ const STUN_FALLBACK = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-function fetchTurnFromMetered() {
-  return new Promise((resolve) => {
-    if (!TURN_APP_SUBDOMAIN || !TURN_API_KEY) return resolve(STUN_FALLBACK);
-    const url = `https://${TURN_APP_SUBDOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(TURN_API_KEY)}`;
-    const req = https.get(url, { timeout: 4000 }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return resolve(STUN_FALLBACK); }
+function meteredRequest(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`https://${TURN_APP_SUBDOMAIN}${path}`);
+    const payload = body ? JSON.stringify(body) : null;
+    const req = https.request(url, {
+      method,
+      timeout: 8000,
+      headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {},
+    }, (res) => {
       let buf = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { buf += c; if (buf.length > 64 * 1024) req.destroy(); });
       res.on('end', () => {
-        try {
-          const parsed = JSON.parse(buf);
-          if (Array.isArray(parsed) && parsed.length > 0) resolve(parsed);
-          else resolve(STUN_FALLBACK);
-        } catch { resolve(STUN_FALLBACK); }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Metered ${method} ${path} → ${res.statusCode}`));
+          return;
+        }
+        try { resolve(buf ? JSON.parse(buf) : null); }
+        catch (e) { reject(e); }
       });
     });
-    req.on('timeout', () => { req.destroy(); resolve(STUN_FALLBACK); });
-    req.on('error', () => resolve(STUN_FALLBACK));
+    req.on('timeout', () => { req.destroy(); reject(new Error('Metered timeout')); });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
   });
+}
+
+async function fetchTurnFromMetered() {
+  if (!TURN_APP_SUBDOMAIN || !METERED_SECRET_KEY) return STUN_FALLBACK;
+  try {
+    // 1) Create a short-lived TURN credential with the Secret Key
+    const created = await meteredRequest(
+      'POST',
+      `/api/v1/turn/credential?secretKey=${encodeURIComponent(METERED_SECRET_KEY)}`,
+      { expiryInSeconds: 86400, label: 'anon-messenger' },
+    );
+    if (!created || !created.apiKey) return STUN_FALLBACK;
+
+    // 2) Fetch the ICE servers array for that credential
+    const iceServers = await meteredRequest(
+      'GET',
+      `/api/v1/turn/credentials?apiKey=${encodeURIComponent(created.apiKey)}`,
+    );
+    if (Array.isArray(iceServers) && iceServers.length > 0) return iceServers;
+    return STUN_FALLBACK;
+  } catch {
+    return STUN_FALLBACK;
+  }
 }
 
 async function getIceServers() {
