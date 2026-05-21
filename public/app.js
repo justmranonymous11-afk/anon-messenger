@@ -90,6 +90,7 @@
     iceServers: null,
     iceHasTurn: false,
     iceSource: '',
+    forceRelay: false,       // true when no TURN — chat uses encrypted WS relay
   };
 
   function newPeer(id) {
@@ -110,6 +111,7 @@
       profileSentToThem: false,
       weInitiate: false,
       iceRetried: false,
+      useRelay: false,
     };
   }
 
@@ -292,6 +294,22 @@
         break;
       }
 
+      case 'relay': {
+        const from = msg.from;
+        const payload = msg.payload;
+        if (!from || typeof payload !== 'string') return;
+        let peer = getPeer(from);
+        if (!peer) {
+          const weInitiate = state.myId < from;
+          await ensurePeerConnection(from, weInitiate);
+          peer = getPeer(from);
+        }
+        if (!peer || !peer.sessionKey) return;
+        if (!peer.useRelay) activateRelayTransport(peer);
+        onDcMessage(peer, payload);
+        break;
+      }
+
       case 'signal': {
         const from = msg.from;
         const p = msg.payload;
@@ -384,9 +402,12 @@
       state.iceServers = normalizeIceServers(body.iceServers);
       state.iceHasTurn = !!body.hasTurn || iceConfigHasTurn(state.iceServers);
       state.iceSource = body.source || 'unknown';
-      console.log('[ice] servers:', state.iceServers.length, 'hasTurn:', state.iceHasTurn, 'source:', state.iceSource);
+      state.forceRelay = !state.iceHasTurn;
+      console.log('[ice] servers:', state.iceServers.length, 'hasTurn:', state.iceHasTurn, 'source:', state.iceSource, 'forceRelay:', state.forceRelay);
       if (!state.iceHasTurn) {
-        setBanner('No TURN relay on server — connection may fail across different networks.', 'warning');
+        const hint = body.hint ? ` (${body.hint})` : '';
+        setBanner(`No TURN relay${hint} — chat will use encrypted server relay. Calls need TURN.`, 'warning');
+        showSystemMessage('Relay mode: messages stay encrypted; server only forwards ciphertext.');
       }
       return state.iceServers;
     } catch (e) {
@@ -394,7 +415,8 @@
       state.iceServers = [...ICE_FALLBACK];
       state.iceHasTurn = false;
       state.iceSource = 'client-fallback';
-      setBanner('Could not load relay config — using STUN only.', 'warning');
+      state.forceRelay = true;
+      setBanner('Could not reach /api/turn — using encrypted server relay for chat.', 'warning');
       return state.iceServers;
     }
   }
@@ -478,10 +500,8 @@
       if (st === 'connected') {
         setStatus('online', true);
         enableChatIfReady();
-      } else if (st === 'failed') {
-        setStatus('connection failed', false);
-        setBanner('Connection failed — try leaving and rejoining the room.', 'warning');
-        disableComposer();
+      } else if (st === 'failed' && !peer.useRelay && !state.forceRelay) {
+        setStatus('p2p failed', false);
       } else if (st === 'disconnected') {
         setStatus('reconnecting…', false);
       }
@@ -493,12 +513,14 @@
       if (iceSt === 'failed' && !peer.iceRetried) {
         peer.iceRetried = true;
         if (state.iceHasTurn) {
-          toast('Direct connection failed — retrying via relay…');
+          toast('Direct connection failed — retrying via TURN…');
           sendReconnectRequest(peerId, true);
           await reconnectPeer(peerId, { iceTransportPolicy: 'relay' });
+        }
+        if (peer.sessionKey) {
+          activateRelayTransport(peer);
         } else {
-          setBanner('Connection failed. Set METERED_APP_SUBDOMAIN + METERED_API_KEY on Railway.', 'warning');
-          toast('No TURN relay — cannot connect across networks');
+          toast('Connection failed — waiting for encryption keys…');
         }
       }
     };
@@ -567,17 +589,31 @@
     }
   }
 
+  function activateRelayTransport(peer) {
+    if (peer.useRelay) return;
+    peer.useRelay = true;
+    console.log(`[relay] active for peer ${peer.id}`);
+    setStatus('online (relay)', true);
+    setBanner('🔒 Encrypted via server relay (ciphertext only). Configure TURN for direct P2P + calls.', 'ok');
+    enableChatIfReady();
+    showSystemMessage('Secure channel ready (relay) — you can chat.');
+    sendMyProfileTo(peer);
+  }
+
   async function onPeerPublicKey(peer, b64) {
     const peerPub = await importPeerPublicKey(b64);
     const { key, safetyNumber } = await deriveSessionKey(state.myKeyPair.privateKey, peerPub);
     peer.sessionKey = key;
     peer.safetyNumber = safetyNumber;
     updateSecurityBanner();
-    enableChatIfReady();
-    // RACE FIX: dc.onopen may have fired BEFORE the pubkey arrived, in which
-    // case sendMyProfileTo would have returned early (no sessionKey). Now that
-    // we DO have the session key, send the profile if it hasn't been sent yet.
+    if (state.forceRelay) {
+      activateRelayTransport(peer);
+    } else {
+      enableChatIfReady();
+    }
     if (peer.dc && peer.dc.readyState === 'open' && !peer.profileSentToThem) {
+      sendMyProfileTo(peer);
+    } else if (peer.useRelay && !peer.profileSentToThem) {
       sendMyProfileTo(peer);
     }
   }
@@ -598,10 +634,14 @@
 
   function updateSecurityBanner() {
     const connectedKeys = Array.from(state.peers.values()).filter(p => p.sessionKey).length;
+    const anyRelay = Array.from(state.peers.values()).some(p => p.useRelay);
     if (connectedKeys === 0) {
       setBanner('Verifying secure channel…', 'info');
+    } else if (anyRelay && !state.iceHasTurn) {
+      setBanner('🔒 Encrypted relay chat active. Add Metered TURN on Railway for calls.', 'ok');
     } else if (connectedKeys === peerCount()) {
-      setBanner(`🔒 Encrypted with ${connectedKeys} peer${connectedKeys>1?'s':''}`, 'ok');
+      const via = anyRelay ? ' (mixed relay/P2P)' : '';
+      setBanner(`🔒 Encrypted with ${connectedKeys} peer${connectedKeys>1?'s':''}${via}`, 'ok');
     } else {
       setBanner(`🔒 ${connectedKeys}/${peerCount()} peers encrypted…`, 'info');
     }
@@ -713,10 +753,14 @@
     } catch (e) { console.warn('DC handler error', e); }
   }
 
-  // Any peer connected = chat is usable.
+  function peerTransportReady(p) {
+    return p.sessionKey && (
+      (p.dc && p.dc.readyState === 'open') || p.useRelay
+    );
+  }
+
   function anyPeerReady() {
-    for (const p of state.peers.values())
-      if (p.dc && p.dc.readyState === 'open' && p.sessionKey) return true;
+    for (const p of state.peers.values()) if (peerTransportReady(p)) return true;
     return false;
   }
 
@@ -724,8 +768,8 @@
     const ready = anyPeerReady();
     const composerIds = ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn'];
     composerIds.forEach(id => { const el = $(id); if (el) el.disabled = !ready; });
-    // Calls are only enabled in 1-on-1 mode AND when the one peer is connected.
-    const callable = ready && state.roomMode === '1on1' && peerCount() === 1;
+    const hasRelayOnly = Array.from(state.peers.values()).some(p => p.useRelay && !(p.dc && p.dc.readyState === 'open'));
+    const callable = ready && state.roomMode === '1on1' && peerCount() === 1 && !hasRelayOnly;
     const audio = $('audio-call-btn'); if (audio) audio.disabled = !callable;
     const video = $('video-call-btn'); if (video) video.disabled = !callable;
     // In group mode, give the call buttons a helpful tooltip explaining they're off.
@@ -748,11 +792,23 @@
   }
 
   // Send to a SPECIFIC peer's data channel (JSON).
+  function relaySendTo(peerId, json) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+    if (json.length > 480 * 1024) {
+      toast('Message too large for relay mode');
+      return false;
+    }
+    state.ws.send(JSON.stringify({ type: 'relay', to: peerId, payload: json }));
+    return true;
+  }
+
   function dcSendTo(peer, obj) {
+    const json = JSON.stringify(obj);
     if (peer.dc && peer.dc.readyState === 'open') {
-      peer.dc.send(JSON.stringify(obj));
+      peer.dc.send(json);
       return true;
     }
+    if (peer.useRelay) return relaySendTo(peer.id, json);
     return false;
   }
 
@@ -773,10 +829,9 @@
   async function dcBroadcastEncryptedText(plaintext, baseMessage) {
     let sent = 0;
     for (const peer of state.peers.values()) {
-      if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+      if (!peerTransportReady(peer)) continue;
       const p = await encryptText(peer.sessionKey, plaintext);
-      dcSendTo(peer, { ...baseMessage, p });
-      sent++;
+      if (dcSendTo(peer, { ...baseMessage, p })) sent++;
     }
     return sent;
   }
@@ -790,9 +845,11 @@
       const chunk = bytes.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
       // Encrypt once per peer (different keys), then send to each.
       for (const peer of state.peers.values()) {
-        if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
-        while (peer.dc.bufferedAmount > 4 * 1024 * 1024) {
-          await new Promise(r => setTimeout(r, 50));
+        if (!peerTransportReady(peer)) continue;
+        if (peer.dc && peer.dc.readyState === 'open') {
+          while (peer.dc.bufferedAmount > 4 * 1024 * 1024) {
+            await new Promise(r => setTimeout(r, 50));
+          }
         }
         const p = await encryptBytes(peer.sessionKey, chunk);
         dcSendTo(peer, { t: 'blob-chunk', id, idx: i, p });
@@ -858,16 +915,15 @@
     try {
       const sent = await dcBroadcastEncryptedText(payload, { t: 'profile' });
       for (const peer of state.peers.values()) {
-        if (peer.dc && peer.dc.readyState === 'open' && peer.sessionKey) {
-          peer.profileSentToThem = true;
-        }
+        if (peerTransportReady(peer)) peer.profileSentToThem = true;
       }
       return sent;
     } catch (e) { console.warn('profile broadcast failed', e); }
   }
 
   async function sendMyProfileTo(peer) {
-    if (!peer.dc || peer.dc.readyState !== 'open' || !peer.sessionKey) return;
+    if (!peer.sessionKey) return;
+    if (!peer.useRelay && (!peer.dc || peer.dc.readyState !== 'open')) return;
     try {
       const payload = JSON.stringify({
         name: state.myProfile.name || '',
@@ -1354,7 +1410,7 @@
       const id = randId();
       // Encrypt+send per peer
       for (const peer of state.peers.values()) {
-        if (!peer.sessionKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+        if (!peerTransportReady(peer)) continue;
         const p = await encryptBytes(peer.sessionKey, bytes);
         dcSendTo(peer, { t: 'audio', id, dur: duration, mime: blob.type, p });
       }
@@ -1528,7 +1584,7 @@
       myKeyPair: null,
       myProfile: { name: '', av: null },
       callPeerId: null,
-      iceServers: null, iceHasTurn: false, iceSource: '',
+      iceServers: null, iceHasTurn: false, iceSource: '', forceRelay: false,
     });
     $('messages').innerHTML = '';
     $('msg-input').value = '';

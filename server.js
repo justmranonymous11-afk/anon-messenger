@@ -31,14 +31,21 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 4040;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Optional Metered.ca TURN proxy. If both env vars are present, the server
-// will expose /api/turn which returns time-limited ICE servers (STUN+TURN).
-// METERED_API_KEY = Secret Key from Metered Dashboard → Developers tab
-// (NOT the per-credential "apiKey" shown after creating a TURN credential).
-// If absent, /api/turn returns just public Google STUN.
-const TURN_APP_SUBDOMAIN = process.env.METERED_APP_SUBDOMAIN || '';
-const METERED_SECRET_KEY = process.env.METERED_API_KEY || process.env.METERED_SECRET_KEY || '';
+// TURN / ICE configuration (priority order):
+//   1) TURN_SERVERS or ICE_SERVERS_JSON — raw JSON array of RTCIceServer objects
+//   2) Metered.ca — METERED_APP_SUBDOMAIN (+ optional METERED_DOMAIN / METERED_APP_NAME)
+//      and METERED_API_KEY or METERED_SECRET_KEY (Secret Key from Developers tab)
+//   3) Public STUN fallback (P2P often fails across networks without TURN)
+//
+// Chat still works without TURN via encrypted WebSocket relay (see `relay` message).
+const METERED_SECRET_KEY = (
+  process.env.METERED_API_KEY
+  || process.env.METERED_SECRET_KEY
+  || process.env.METERED_SECRET
+  || ''
+).trim();
 const TURN_CACHE_MS = 5 * 60 * 1000;
+const MAX_RELAY_BYTES = 512 * 1024;
 let turnCache = { expires: 0, body: null };
 
 const STUN_FALLBACK = [
@@ -48,11 +55,34 @@ const STUN_FALLBACK = [
 ];
 
 function meteredHost() {
-  let h = (TURN_APP_SUBDOMAIN || '').trim();
-  if (!h) return '';
+  const raw = (
+    process.env.METERED_APP_SUBDOMAIN
+    || process.env.METERED_DOMAIN
+    || process.env.METERED_APP_NAME
+    || ''
+  ).trim();
+  if (!raw) return '';
+  let h = raw;
   if (h.startsWith('https://')) h = h.slice(8);
   if (h.startsWith('http://')) h = h.slice(7);
-  return h.replace(/\/+$/, '');
+  h = h.replace(/\/+$/, '');
+  // Allow bare app name "myapp" → "myapp.metered.live"
+  if (!h.includes('.') && /^[a-z0-9-]+$/i.test(h)) h = `${h}.metered.live`;
+  return h;
+}
+
+function iceServersFromEnvJson() {
+  const raw = process.env.TURN_SERVERS || process.env.ICE_SERVERS_JSON;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed) ? parsed : parsed.iceServers;
+    if (!Array.isArray(list) || !list.length) return null;
+    return normalizeIceServers(list);
+  } catch (e) {
+    console.warn('[turn] TURN_SERVERS JSON parse failed:', e.message || e);
+    return null;
+  }
 }
 
 function normalizeIceServers(raw) {
@@ -97,7 +127,8 @@ function meteredRequest(method, path, body) {
       res.on('data', (c) => { buf += c; if (buf.length > 64 * 1024) req.destroy(); });
       res.on('end', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`Metered ${method} ${path} → ${res.statusCode}`));
+          const snippet = (buf || '').slice(0, 200);
+          reject(new Error(`Metered ${method} ${path} → ${res.statusCode} ${snippet}`));
           return;
         }
         try { resolve(buf ? JSON.parse(buf) : null); }
@@ -112,8 +143,20 @@ function meteredRequest(method, path, body) {
 }
 
 async function fetchTurnFromMetered() {
-  if (!meteredHost() || !METERED_SECRET_KEY) {
-    return { servers: [...STUN_FALLBACK], source: 'stun-only' };
+  const host = meteredHost();
+  if (!host) {
+    return {
+      servers: [...STUN_FALLBACK],
+      source: 'stun-only',
+      hint: 'Set METERED_APP_SUBDOMAIN to yourapp.metered.live (or use TURN_SERVERS JSON)',
+    };
+  }
+  if (!METERED_SECRET_KEY) {
+    return {
+      servers: [...STUN_FALLBACK],
+      source: 'stun-only',
+      hint: 'Set METERED_API_KEY to your Metered Secret Key (Developers tab)',
+    };
   }
   try {
     const created = await meteredRequest(
@@ -121,29 +164,52 @@ async function fetchTurnFromMetered() {
       `/api/v1/turn/credential?secretKey=${encodeURIComponent(METERED_SECRET_KEY)}`,
       { expiryInSeconds: 86400, label: 'anon-messenger' },
     );
-    if (!created || !created.apiKey) {
-      return { servers: [...STUN_FALLBACK], source: 'metered-no-key' };
+    const apiKey = created && (created.apiKey || created.api_key);
+    if (!apiKey) {
+      return {
+        servers: [...STUN_FALLBACK],
+        source: 'metered-no-key',
+        hint: 'Metered credential response missing apiKey — check Secret Key',
+      };
     }
 
     const raw = await meteredRequest(
       'GET',
-      `/api/v1/turn/credentials?apiKey=${encodeURIComponent(created.apiKey)}`,
+      `/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`,
     );
     const list = Array.isArray(raw) ? raw : (raw && raw.iceServers);
     const servers = normalizeIceServers(list);
     return {
       servers,
       source: iceHasTurn(servers) ? 'metered-turn' : 'metered-stun-only',
+      hint: iceHasTurn(servers) ? null : 'Metered returned no turn: URLs',
     };
   } catch (e) {
-    console.warn('[turn] Metered fetch failed:', e.message || e);
-    return { servers: [...STUN_FALLBACK], source: 'error' };
+    const msg = String(e.message || e);
+    console.warn('[turn] Metered fetch failed:', msg);
+    return {
+      servers: [...STUN_FALLBACK],
+      source: 'error',
+      hint: msg.includes('401') ? 'Invalid METERED_API_KEY (Secret Key)' : msg.slice(0, 120),
+    };
   }
 }
 
 async function getIceServers() {
   const now = Date.now();
   if (turnCache.body && now < turnCache.expires) return turnCache.body;
+
+  const fromJson = iceServersFromEnvJson();
+  if (fromJson) {
+    const body = {
+      servers: fromJson,
+      source: iceHasTurn(fromJson) ? 'env-json-turn' : 'env-json-stun',
+      hint: null,
+    };
+    turnCache = { expires: now + TURN_CACHE_MS, body };
+    return body;
+  }
+
   const body = await fetchTurnFromMetered();
   turnCache = { expires: now + TURN_CACHE_MS, body };
   return body;
@@ -177,6 +243,8 @@ const httpServer = http.createServer(async (req, res) => {
         iceServers: cfg.servers,
         hasTurn: iceHasTurn(cfg.servers),
         source: cfg.source,
+        hint: cfg.hint || null,
+        relayAvailable: true,
       }));
       return;
     }
@@ -514,6 +582,18 @@ function handleConnection(ws) {
         return;
       }
 
+      case 'relay': {
+        if (!ws._room || !ws._peerId) return;
+        const toId = typeof msg.to === 'string' ? msg.to : null;
+        const payload = msg.payload;
+        if (!toId || typeof payload !== 'string') return;
+        if (payload.length > MAX_RELAY_BYTES) return;
+        const target = ws._room.peers.get(toId);
+        if (!target) return;
+        safeSend(target, { type: 'relay', from: ws._peerId, payload });
+        return;
+      }
+
       case 'leave': {
         leave(ws);
         return;
@@ -526,9 +606,12 @@ function handleConnection(ws) {
 }
 
 httpServer.listen(PORT, () => {
+  const host = meteredHost();
   console.log(`
   Anonymous Messenger running:
     Local:   http://localhost:${PORT}
+    TURN:    ${host ? host : '(not configured)'} secret=${METERED_SECRET_KEY ? 'yes' : 'no'}
+    Relay:   encrypted chat fallback enabled (no TURN required for text)
 
   Open the URL in two browser windows / devices, use the same room
   code in both, and you'll have an end-to-end encrypted chat + call.
