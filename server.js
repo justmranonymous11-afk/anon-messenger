@@ -140,17 +140,28 @@ const httpServer = http.createServer(async (req, res) => {
     }
 
     fs.stat(filePath, (err, stat) => {
-      if (err || !stat.isFile()) {
-        res.writeHead(404); res.end('Not found'); return;
+      const send = (p) => {
+        const ext = path.extname(p).toLowerCase();
+        res.writeHead(200, {
+          'Content-Type': MIME[ext] || 'application/octet-stream',
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+        });
+        fs.createReadStream(p).pipe(res);
+      };
+      if (!err && stat.isFile()) { send(filePath); return; }
+      // /@ROOMCODE or /ROOMCODE — serve the SPA (client reads pathname).
+      const seg = urlPath.replace(/^\//, '').replace(/^@/, '');
+      if (/^[A-Za-z0-9]{4,12}$/.test(seg)) {
+        const spa = path.join(PUBLIC_DIR, 'index.html');
+        fs.stat(spa, (err2, stat2) => {
+          if (err2 || !stat2.isFile()) { res.writeHead(404); res.end('Not found'); return; }
+          send(spa);
+        });
+        return;
       }
-      const ext = path.extname(filePath).toLowerCase();
-      res.writeHead(200, {
-        'Content-Type': MIME[ext] || 'application/octet-stream',
-        'Cache-Control': 'no-store',
-        'X-Content-Type-Options': 'nosniff',
-        'Referrer-Policy': 'no-referrer',
-      });
-      fs.createReadStream(filePath).pipe(res);
+      res.writeHead(404); res.end('Not found');
     });
   } catch {
     res.writeHead(500); res.end('Server error');
@@ -365,6 +376,21 @@ function leave(ws) {
   ws._peerId = null;
 }
 
+// Drop sockets that closed without a clean leave (refresh, tab kill).
+function pruneDeadPeers(room) {
+  for (const [id, peer] of room.peers) {
+    if (peer._closed) room.peers.delete(id);
+  }
+}
+
+function notifyReady1on1(room) {
+  if (room.mode !== '1on1' || room.peers.size !== 2) return;
+  const ids = Array.from(room.peers.keys());
+  for (const peer of room.peers.values()) {
+    safeSend(peer, { type: 'ready', peers: ids });
+  }
+}
+
 function handleConnection(ws) {
   ws._room = null;
   ws._roomId = null;
@@ -388,6 +414,7 @@ function handleConnection(ws) {
           room = { mode: requestedMode, peers: new Map() };
           rooms.set(roomId, room);
         }
+        pruneDeadPeers(room);
         const cap = CAPS[room.mode] || 2;
         if (room.peers.size >= cap) {
           safeSend(ws, {
@@ -415,6 +442,7 @@ function handleConnection(ws) {
           if (id === myId) continue;
           safeSend(peer, { type: 'peer-joined', id: myId });
         }
+        notifyReady1on1(room);
         return;
       }
 

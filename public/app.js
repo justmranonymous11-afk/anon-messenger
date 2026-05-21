@@ -98,8 +98,12 @@
       polite: false,
       makingOffer: false,
       ignoreOffer: false,
+      remoteDescSet: false,
+      pendingCandidates: [],
+      signalChain: Promise.resolve(),
       incomingBlobs: new Map(),
       profile: { name: '', av: null },
+      profileSentToThem: false,
     };
   }
 
@@ -168,22 +172,40 @@
       state.ws = ws;
       ws.onopen = () => resolve(ws);
       ws.onerror = (e) => reject(e);
-      ws.onmessage = async (ev) => {
+      ws.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
-        try { await handleSignal(msg); } catch (e) { console.error(e); }
+        enqueueSignal(() => handleSignal(msg));
       };
       ws.onclose = () => setStatus('disconnected', false);
     });
   }
 
   function sendSignal(toId, payload) {
+    if (!state.myId) {
+      console.warn('[signal] dropped — not joined yet');
+      return;
+    }
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({ type: 'signal', to: toId, payload }));
     }
   }
 
+  // Process signaling messages one at a time (SDP/ICE races break WebRTC).
+  let signalInbox = Promise.resolve();
+  let joinedReady = false;
+  const preJoinQueue = [];
+
+  function enqueueSignal(fn) {
+    signalInbox = signalInbox.then(fn).catch((e) => console.error('[signal]', e));
+    return signalInbox;
+  }
+
   async function handleSignal(msg) {
+    if (!joinedReady && msg.type !== 'joined') {
+      preJoinQueue.push(msg);
+      return;
+    }
     switch (msg.type) {
       case 'joined': {
         state.myId = msg.you;
@@ -211,6 +233,9 @@
           }
         }
         updateHeaderForPeers();
+        joinedReady = true;
+        const queued = preJoinQueue.splice(0);
+        for (const m of queued) await handleSignal(m);
         break;
       }
 
@@ -223,13 +248,23 @@
         break;
       }
 
+      case 'ready': {
+        // 1-on-1 sync: both peers are in the room — (re)connect if needed.
+        if (state.roomMode !== '1on1') break;
+        const others = Array.isArray(msg.peers) ? msg.peers : [];
+        for (const peerId of others) {
+          if (peerId === state.myId) continue;
+          const weInitiate = state.myId < peerId;
+          await ensurePeerConnection(peerId, weInitiate);
+        }
+        break;
+      }
+
       case 'signal': {
         const from = msg.from;
         const p = msg.payload;
         if (!from || !p) return;
         let peer = getPeer(from);
-        // If we somehow receive a signal from an unknown peer (race condition),
-        // start the connection — they're polite to us.
         if (!peer) {
           const weInitiate = state.myId < from;
           await ensurePeerConnection(from, weInitiate);
@@ -238,9 +273,8 @@
         }
         if (p.kind === 'description') {
           await onRemoteDescription(peer, p.description);
-        } else if (p.kind === 'ice' && p.candidate) {
-          try { await peer.pc.addIceCandidate(p.candidate); }
-          catch (e) { if (!peer.ignoreOffer) console.warn('ICE add failed', e); }
+        } else if (p.kind === 'ice') {
+          await addRemoteIce(peer, p.candidate);
         } else if (p.kind === 'pubkey') {
           await onPeerPublicKey(peer, p.key);
         }
@@ -294,8 +328,38 @@
     }
   }
 
+  async function addRemoteIce(peer, candidate) {
+    if (!peer.pc) return;
+    if (!candidate) return; // end-of-candidates
+    if (!peer.remoteDescSet) {
+      peer.pendingCandidates.push(candidate);
+      return;
+    }
+    try {
+      await peer.pc.addIceCandidate(candidate);
+    } catch (e) {
+      if (!peer.ignoreOffer) console.warn(`[pc:${peer.id}] ICE add failed`, e);
+    }
+  }
+
+  async function flushPendingIce(peer) {
+    if (!peer.pc || !peer.remoteDescSet) return;
+    const pending = peer.pendingCandidates.splice(0);
+    for (const c of pending) {
+      try { await peer.pc.addIceCandidate(c); }
+      catch (e) { console.warn(`[pc:${peer.id}] flush ICE failed`, e); }
+    }
+  }
+
   async function ensurePeerConnection(peerId, weInitiate) {
-    if (getPeer(peerId)) return getPeer(peerId);
+    const existing = getPeer(peerId);
+    if (existing && existing.pc) {
+      const st = existing.pc.connectionState;
+      if (st !== 'failed' && st !== 'closed') return existing;
+      try { existing.dc && existing.dc.close(); } catch {}
+      try { existing.pc.close(); } catch {}
+      state.peers.delete(peerId);
+    }
     const peer = newPeer(peerId);
     peer.polite = !weInitiate;
     state.peers.set(peerId, peer);
@@ -310,6 +374,16 @@
     peer.pc.onconnectionstatechange = () => {
       const st = peer.pc.connectionState;
       console.log(`[pc:${peerId}] connectionState=${st}`);
+      if (st === 'connected') {
+        setStatus('online', true);
+        enableChatIfReady();
+      } else if (st === 'failed') {
+        setStatus('connection failed', false);
+        setBanner('Connection failed — try leaving and rejoining the room.', 'warning');
+        disableComposer();
+      } else if (st === 'disconnected') {
+        setStatus('reconnecting…', false);
+      }
       updateHeaderForPeers();
     };
     peer.pc.oniceconnectionstatechange = () => {
@@ -372,6 +446,8 @@
     } else {
       await pc.setRemoteDescription(description);
     }
+    peer.remoteDescSet = true;
+    await flushPendingIce(peer);
     if (description.type === 'offer') {
       await pc.setLocalDescription();
       sendSignal(peer.id, { kind: 'description', description: pc.localDescription });
@@ -398,9 +474,9 @@
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 64 * 1024;
     dc.onopen = () => {
+      console.log(`[dc:${peer.id}] open`);
       enableChatIfReady();
-      // Try to send the profile. If sessionKey isn't ready yet, this returns
-      // early and onPeerPublicKey will retry once the key is derived.
+      showSystemMessage('Secure channel ready — you can chat.');
       sendMyProfileTo(peer);
     };
     dc.onclose = () => { updateHeaderForPeers(); };
@@ -1232,8 +1308,16 @@
   // ===========================================================
   $('gen-btn').addEventListener('click', () => { $('room-input').value = randCode(6); });
 
-  if (location.hash && /^#[A-Za-z0-9]{4,12}$/.test(location.hash)) {
-    $('room-input').value = location.hash.slice(1).toUpperCase();
+  function roomFromUrl() {
+    const hash = location.hash.replace(/^#/, '').toUpperCase();
+    if (/^[A-Z0-9]{4,12}$/.test(hash)) return hash;
+    const path = location.pathname.replace(/^\//, '').replace(/^@/, '').toUpperCase();
+    if (/^[A-Z0-9]{4,12}$/.test(path)) return path;
+    return null;
+  }
+  const urlRoom = roomFromUrl();
+  if (urlRoom) {
+    $('room-input').value = urlRoom;
   } else {
     $('room-input').value = randCode(6);
   }
@@ -1282,6 +1366,13 @@
       setBanner('Verifying secure channel…', 'info');
       setStatus('connecting…', false);
       updateModeIndicator();
+      clearTimeout(state._connectTimeout);
+      state._connectTimeout = setTimeout(() => {
+        if (!anyPeerReady()) {
+          setBanner('Still connecting… check both devices use the same room code.', 'warning');
+          toast('Not connected yet — try refreshing both tabs');
+        }
+      }, 25000);
     } catch { toast('Could not reach server'); }
   });
 
@@ -1315,6 +1406,10 @@
     }
     state.peers.clear();
     teardownCall();
+    joinedReady = false;
+    preJoinQueue.length = 0;
+    signalInbox = Promise.resolve();
+    clearTimeout(state._connectTimeout);
     Object.assign(state, {
       ws: null, myId: null, room: null,
       myKeyPair: null,
