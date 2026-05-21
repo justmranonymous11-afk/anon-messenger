@@ -173,6 +173,22 @@ button { font-family: inherit; cursor: pointer; }
 .peer-status.online { color: var(--success); }
 
 .header-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+/* Profile button: when set, becomes a visual representation of YOU */
+#profile-btn.has-profile {
+  overflow: hidden;
+  background-color: var(--bg-3);
+  border: 2px solid var(--accent-3);
+}
+#profile-btn.has-profile .profile-initial {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
+  color: white;
+  font-size: 17px;
+  border-radius: 50%;
+}
 /* Make call-action buttons in the header always visible, even when disabled,
    so users can see at a glance that calling is supported. */
 .header-actions .icon-btn:disabled {
@@ -676,11 +692,11 @@ button { font-family: inherit; cursor: pointer; }
 @media (max-width: 480px) {
   .join-card { padding: 24px 18px; }
 
-  /* Bigger touch targets on phones */
+  /* Bigger touch targets + bigger icons inside them */
   .chat-header { gap: 6px; padding-left: 8px; padding-right: 8px; }
-  .icon-btn { width: 50px; height: 50px; }
-  .icon-btn svg { width: 26px; height: 26px; }
-  .header-actions { gap: 2px; }
+  .icon-btn { width: 48px; height: 48px; }
+  .icon-btn svg { width: 28px !important; height: 28px !important; }
+  .header-actions { gap: 4px; }
   .header-actions .icon-btn {
     background: rgba(0,194,168,0.12);
     color: var(--accent-3);
@@ -688,13 +704,14 @@ button { font-family: inherit; cursor: pointer; }
   .header-actions .icon-btn:disabled {
     background: rgba(0,194,168,0.06);
   }
+  #profile-btn.has-profile .profile-initial { font-size: 20px; }
 
   /* Composer too */
   .composer { gap: 4px; padding: 8px 8px; }
   .composer-icon { width: 48px; height: 48px; }
-  .composer-icon svg { width: 24px; height: 24px; }
+  .composer-icon svg { width: 26px !important; height: 26px !important; }
   .send-btn { width: 48px; height: 48px; }
-  .send-btn svg { width: 24px; height: 24px; }
+  .send-btn svg { width: 26px !important; height: 26px !important; }
   .composer input { font-size: 16px; /* prevent iOS zoom on focus */ }
 
   /* Call overlay */

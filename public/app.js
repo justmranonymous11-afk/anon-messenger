@@ -526,6 +526,33 @@
     }
   }
 
+  // Update the profile button to visually represent YOU (your name/avatar).
+  // Gives clear self-feedback when you save profile changes.
+  function applyMyProfile() {
+    const btn = $('profile-btn');
+    if (!btn) return;
+    const name = (state.myProfile.name || '').trim();
+    const av = state.myProfile.av;
+    const label = name ? `You: ${name} (tap to edit)` : 'Set your name & avatar (temporary)';
+    btn.setAttribute('title', label);
+    btn.setAttribute('aria-label', label);
+    if (av) {
+      btn.style.backgroundImage = `url(${av})`;
+      btn.style.backgroundSize = 'cover';
+      btn.style.backgroundPosition = 'center';
+      btn.innerHTML = '';
+      btn.classList.add('has-profile');
+    } else if (name) {
+      btn.style.backgroundImage = '';
+      btn.innerHTML = `<span class="profile-initial">${escapeHtml(name[0].toUpperCase())}</span>`;
+      btn.classList.add('has-profile');
+    } else {
+      btn.style.backgroundImage = '';
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>';
+      btn.classList.remove('has-profile');
+    }
+  }
+
   // Resize an image File/Blob to <= side x side JPEG. Returns dataURL.
   async function resizeImageFile(file, side = 128, quality = 0.82) {
     const url = URL.createObjectURL(file);
@@ -955,8 +982,9 @@
     if (pending === '') state.myProfile.av = null;
     else if (pending) state.myProfile.av = pending;
     closeProfileDialog();
+    applyMyProfile();
     sendMyProfile();
-    toast('Profile updated (session only)');
+    toast(name ? `Saved as "${name}"` : 'Profile cleared');
   });
 
   // ===========================================================
@@ -983,6 +1011,7 @@
       $('peer-avatar').textContent = code.charAt(0);
       $('peer-avatar').style.backgroundImage = '';
       document.querySelector('.peer-name').textContent = 'Anonymous peer';
+      applyMyProfile();
       showSystemMessage(`Room "${code}" — anyone with this code (and only one other person) can join.`);
       setBanner('Verifying secure channel…', 'info');
       setStatus('connecting…', false);
@@ -1014,6 +1043,7 @@
     disableComposer();
     $('sticker-panel').classList.add('hidden');
     closeProfileDialog();
+    applyMyProfile();
     location.hash = '';
     showScreen('join-screen');
   }
