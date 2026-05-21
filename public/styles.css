@@ -328,12 +328,26 @@ button { font-family: inherit; cursor: pointer; }
 }
 .composer input:focus { outline: none; border-color: var(--accent); }
 .composer-icon { width: 40px; height: 40px; flex-shrink: 0; }
+/* Keep composer icon buttons visible even when disabled (waiting for peer) */
+.composer-icon:disabled {
+  opacity: 0.85;
+  background: rgba(0,194,168,0.06);
+  color: var(--accent-3);
+}
+.composer-icon:not(:disabled) {
+  color: var(--accent-3);
+}
 .send-btn {
   width: 42px; height: 42px;
   padding: 0;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+}
+.send-btn:disabled {
+  opacity: 0.9;
+  background: rgba(0,194,168,0.3);
+  color: white;
 }
 .send-btn svg { transform: translateY(-1px); }
 
@@ -482,7 +496,21 @@ button { font-family: inherit; cursor: pointer; }
 }
 .call-btn:hover { background: rgba(255,255,255,0.25); }
 .call-btn:active { transform: scale(0.95); }
-.call-btn.muted { background: rgba(255,255,255,0.4); }
+/* When mic or camera is OFF: red tint + diagonal slash so it's unmistakable */
+.call-btn.muted {
+  background: var(--danger);
+  color: white;
+  position: relative;
+}
+.call-btn.muted::after {
+  content: "";
+  position: absolute;
+  inset: 14px;
+  border-bottom: 2.5px solid white;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
 .call-btn.hangup { background: var(--danger); }
 .call-btn.hangup:hover { background: #c43c3c; }
 .call-btn.accept { background: var(--success); }
