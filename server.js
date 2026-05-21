@@ -44,7 +44,14 @@ const METERED_SECRET_KEY = (
   || process.env.METERED_SECRET
   || ''
 ).trim();
-const TURN_CACHE_MS = 5 * 60 * 1000;
+// apiKey from an EXISTING credential in Metered dashboard (TURN Server → credential → apiKey).
+// Use this on Railway instead of creating new credentials via API (avoids 403 max-credentials).
+const METERED_TURN_API_KEY = (
+  process.env.METERED_TURN_API_KEY
+  || process.env.METERED_CREDENTIAL_API_KEY
+  || ''
+).trim();
+const TURN_CACHE_MS = 23 * 60 * 60 * 1000; // reuse credentials ~23h (Metered default expiry 24h)
 const MAX_RELAY_BYTES = 512 * 1024;
 let turnCache = { expires: 0, body: null };
 
@@ -111,6 +118,35 @@ function iceHasTurn(servers) {
   });
 }
 
+/** Never expose secretKey / apiKey in API responses or logs shown to clients. */
+function redactSecrets(text) {
+  return String(text)
+    .replace(/secretKey=[^&\s'"`]+/gi, 'secretKey=[redacted]')
+    .replace(/apiKey=[^&\s'"`]+/gi, 'apiKey=[redacted]');
+}
+
+function turnFromStaticUserPass() {
+  const user = (process.env.METERED_TURN_USERNAME || '').trim();
+  const pass = (process.env.METERED_TURN_PASSWORD || '').trim();
+  if (!user || !pass) return null;
+  return normalizeIceServers([
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80', username: user, credential: pass },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: user, credential: pass },
+    { urls: 'turn:global.relay.metered.ca:443', username: user, credential: pass },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: user, credential: pass },
+  ]);
+}
+
+async function meteredFetchIceByApiKey(apiKey) {
+  const raw = await meteredRequest(
+    'GET',
+    `/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`,
+  );
+  const list = Array.isArray(raw) ? raw : (raw && raw.iceServers);
+  return normalizeIceServers(list);
+}
+
 function meteredRequest(method, path, body) {
   return new Promise((resolve, reject) => {
     const host = meteredHost();
@@ -128,7 +164,7 @@ function meteredRequest(method, path, body) {
       res.on('end', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const snippet = (buf || '').slice(0, 200);
-          reject(new Error(`Metered ${method} ${path} → ${res.statusCode} ${snippet}`));
+          reject(new Error(`Metered ${method} ${path.split('?')[0]} → ${res.statusCode} ${snippet}`));
           return;
         }
         try { resolve(buf ? JSON.parse(buf) : null); }
@@ -143,21 +179,54 @@ function meteredRequest(method, path, body) {
 }
 
 async function fetchTurnFromMetered() {
+  const staticUp = turnFromStaticUserPass();
+  if (staticUp) {
+    return {
+      servers: staticUp,
+      source: iceHasTurn(staticUp) ? 'metered-static-user' : 'stun-only',
+      hint: null,
+    };
+  }
+
   const host = meteredHost();
   if (!host) {
     return {
       servers: [...STUN_FALLBACK],
       source: 'stun-only',
-      hint: 'Set METERED_APP_SUBDOMAIN to yourapp.metered.live (or use TURN_SERVERS JSON)',
+      hint: 'Set METERED_APP_SUBDOMAIN to yourapp (→ yourapp.metered.live)',
     };
   }
+
+  // Best for Railway: paste apiKey from dashboard credential (no POST = no 403 quota).
+  if (METERED_TURN_API_KEY) {
+    try {
+      const servers = await meteredFetchIceByApiKey(METERED_TURN_API_KEY);
+      return {
+        servers,
+        source: iceHasTurn(servers) ? 'metered-turn' : 'metered-stun-only',
+        hint: null,
+      };
+    } catch (e) {
+      const msg = redactSecrets(e.message || e);
+      console.warn('[turn] METERED_TURN_API_KEY fetch failed:', msg);
+      return {
+        servers: [...STUN_FALLBACK],
+        source: 'error',
+        hint: msg.includes('401') || msg.includes('403')
+          ? 'Invalid METERED_TURN_API_KEY — copy apiKey from Metered → TURN Server → your credential'
+          : redactSecrets(msg).slice(0, 100),
+      };
+    }
+  }
+
   if (!METERED_SECRET_KEY) {
     return {
       servers: [...STUN_FALLBACK],
       source: 'stun-only',
-      hint: 'Set METERED_API_KEY to your Metered Secret Key (Developers tab)',
+      hint: 'Set METERED_TURN_API_KEY (credential apiKey) OR METERED_API_KEY (Secret Key)',
     };
   }
+
   try {
     const created = await meteredRequest(
       'POST',
@@ -169,28 +238,29 @@ async function fetchTurnFromMetered() {
       return {
         servers: [...STUN_FALLBACK],
         source: 'metered-no-key',
-        hint: 'Metered credential response missing apiKey — check Secret Key',
+        hint: 'Metered POST succeeded but no apiKey — use METERED_TURN_API_KEY from dashboard',
       };
     }
-
-    const raw = await meteredRequest(
-      'GET',
-      `/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`,
-    );
-    const list = Array.isArray(raw) ? raw : (raw && raw.iceServers);
-    const servers = normalizeIceServers(list);
+    const servers = await meteredFetchIceByApiKey(apiKey);
     return {
       servers,
       source: iceHasTurn(servers) ? 'metered-turn' : 'metered-stun-only',
-      hint: iceHasTurn(servers) ? null : 'Metered returned no turn: URLs',
+      hint: null,
     };
   } catch (e) {
-    const msg = String(e.message || e);
+    const raw = String(e.message || e);
+    const msg = redactSecrets(raw);
     console.warn('[turn] Metered fetch failed:', msg);
+    let hint = redactSecrets(raw).slice(0, 120);
+    if (raw.includes('403')) {
+      hint = 'Metered 403: max credentials. In Metered → TURN Server → open a credential → copy its apiKey → set METERED_TURN_API_KEY on Railway (remove auto-create).';
+    } else if (raw.includes('401')) {
+      hint = 'Invalid METERED_API_KEY — use Secret Key from Developers tab, or use METERED_TURN_API_KEY instead.';
+    }
     return {
       servers: [...STUN_FALLBACK],
       source: 'error',
-      hint: msg.includes('401') ? 'Invalid METERED_API_KEY (Secret Key)' : msg.slice(0, 120),
+      hint,
     };
   }
 }
@@ -243,8 +313,15 @@ const httpServer = http.createServer(async (req, res) => {
         iceServers: cfg.servers,
         hasTurn: iceHasTurn(cfg.servers),
         source: cfg.source,
-        hint: cfg.hint || null,
+        hint: cfg.hint ? redactSecrets(cfg.hint) : null,
         relayAvailable: true,
+        meteredHost: meteredHost() || null,
+        config: {
+          subdomain: !!meteredHost(),
+          secretKey: !!METERED_SECRET_KEY,
+          turnApiKey: !!METERED_TURN_API_KEY,
+          staticUser: !!(process.env.METERED_TURN_USERNAME && process.env.METERED_TURN_PASSWORD),
+        },
       }));
       return;
     }
@@ -610,7 +687,7 @@ httpServer.listen(PORT, () => {
   console.log(`
   Anonymous Messenger running:
     Local:   http://localhost:${PORT}
-    TURN:    ${host ? host : '(not configured)'} secret=${METERED_SECRET_KEY ? 'yes' : 'no'}
+    TURN:    ${host ? host : '(not configured)'} secret=${METERED_SECRET_KEY ? 'yes' : 'no'} turnApiKey=${METERED_TURN_API_KEY ? 'yes' : 'no'}
     Relay:   encrypted chat fallback enabled (no TURN required for text)
 
   Open the URL in two browser windows / devices, use the same room
