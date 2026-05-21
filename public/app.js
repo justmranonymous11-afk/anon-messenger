@@ -86,6 +86,10 @@
     recordCancelled: false,
     // your session profile (broadcast to all peers, wiped on leave)
     myProfile: { name: '', av: null },
+    // Cached from /api/turn — needed for relay retry when direct ICE fails.
+    iceServers: null,
+    iceHasTurn: false,
+    iceSource: '',
   };
 
   function newPeer(id) {
@@ -104,6 +108,8 @@
       incomingBlobs: new Map(),
       profile: { name: '', av: null },
       profileSentToThem: false,
+      weInitiate: false,
+      iceRetried: false,
     };
   }
 
@@ -191,6 +197,23 @@
     }
   }
 
+  function sendReconnectRequest(toId, relay) {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'reconnect', to: toId, relay: !!relay }));
+    }
+  }
+
+  async function reconnectPeer(peerId, opts = {}) {
+    const old = getPeer(peerId);
+    const weInitiate = old ? old.weInitiate : (state.myId < peerId);
+    if (old) {
+      try { old.dc && old.dc.close(); } catch {}
+      try { old.pc && old.pc.close(); } catch {}
+      state.peers.delete(peerId);
+    }
+    return ensurePeerConnection(peerId, weInitiate, opts);
+  }
+
   // Process signaling messages one at a time (SDP/ICE races break WebRTC).
   let signalInbox = Promise.resolve();
   let joinedReady = false;
@@ -260,6 +283,15 @@
         break;
       }
 
+      case 'reconnect': {
+        const from = msg.from;
+        if (!from || from === state.myId) return;
+        const opts = msg.relay && state.iceHasTurn ? { iceTransportPolicy: 'relay' } : {};
+        showSystemMessage('Reconnecting…');
+        await reconnectPeer(from, opts);
+        break;
+      }
+
       case 'signal': {
         const from = msg.from;
         const p = msg.payload;
@@ -314,29 +346,81 @@
   const ICE_FALLBACK = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
   ];
 
-  async function fetchIceServers() {
+  function normalizeIceServers(raw) {
+    if (!Array.isArray(raw)) return [...ICE_FALLBACK];
+    const out = [];
+    for (const entry of raw) {
+      if (!entry) continue;
+      let urls = entry.urls || entry.url;
+      if (!urls) continue;
+      if (!Array.isArray(urls)) urls = [String(urls)];
+      const item = { urls };
+      const user = entry.username || entry.user;
+      const cred = entry.credential || entry.password;
+      if (user) item.username = String(user);
+      if (cred) item.credential = String(cred);
+      out.push(item);
+    }
+    return out.length ? out : [...ICE_FALLBACK];
+  }
+
+  function iceConfigHasTurn(servers) {
+    return servers.some((s) => {
+      const u = s.urls;
+      const list = Array.isArray(u) ? u : [u];
+      return list.some((x) => /^turns?:/i.test(String(x)));
+    });
+  }
+
+  async function loadIceConfig() {
+    if (state.iceServers) return state.iceServers;
     try {
       const res = await fetch('/api/turn', { cache: 'no-store' });
-      if (!res.ok) return ICE_FALLBACK;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
-      const list = Array.isArray(body && body.iceServers) ? body.iceServers : null;
-      return list && list.length ? list : ICE_FALLBACK;
-    } catch {
-      return ICE_FALLBACK;
+      state.iceServers = normalizeIceServers(body.iceServers);
+      state.iceHasTurn = !!body.hasTurn || iceConfigHasTurn(state.iceServers);
+      state.iceSource = body.source || 'unknown';
+      console.log('[ice] servers:', state.iceServers.length, 'hasTurn:', state.iceHasTurn, 'source:', state.iceSource);
+      if (!state.iceHasTurn) {
+        setBanner('No TURN relay on server — connection may fail across different networks.', 'warning');
+      }
+      return state.iceServers;
+    } catch (e) {
+      console.warn('[ice] fetch failed', e);
+      state.iceServers = [...ICE_FALLBACK];
+      state.iceHasTurn = false;
+      state.iceSource = 'client-fallback';
+      setBanner('Could not load relay config — using STUN only.', 'warning');
+      return state.iceServers;
     }
+  }
+
+  function toIceCandidateInit(obj) {
+    if (!obj) return null;
+    if (obj instanceof RTCIceCandidate) return obj;
+    const init = {
+      candidate: obj.candidate,
+      sdpMid: obj.sdpMid,
+      sdpMLineIndex: obj.sdpMLineIndex,
+    };
+    if (obj.usernameFragment) init.usernameFragment = obj.usernameFragment;
+    return init;
   }
 
   async function addRemoteIce(peer, candidate) {
     if (!peer.pc) return;
-    if (!candidate) return; // end-of-candidates
+    const init = toIceCandidateInit(candidate);
+    if (!init || !init.candidate) return; // end-of-candidates
     if (!peer.remoteDescSet) {
-      peer.pendingCandidates.push(candidate);
+      peer.pendingCandidates.push(init);
       return;
     }
     try {
-      await peer.pc.addIceCandidate(candidate);
+      await peer.pc.addIceCandidate(init);
     } catch (e) {
       if (!peer.ignoreOffer) console.warn(`[pc:${peer.id}] ICE add failed`, e);
     }
@@ -351,7 +435,7 @@
     }
   }
 
-  async function ensurePeerConnection(peerId, weInitiate) {
+  async function ensurePeerConnection(peerId, weInitiate, opts = {}) {
     const existing = getPeer(peerId);
     if (existing && existing.pc) {
       const st = existing.pc.connectionState;
@@ -362,13 +446,30 @@
     }
     const peer = newPeer(peerId);
     peer.polite = !weInitiate;
+    peer.weInitiate = weInitiate;
     state.peers.set(peerId, peer);
 
-    const iceServers = await fetchIceServers();
-    peer.pc = new RTCPeerConnection({ iceServers });
+    const iceServers = await loadIceConfig();
+    const pcConfig = {
+      iceServers,
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+    };
+    if (opts.iceTransportPolicy === 'relay' && state.iceHasTurn) {
+      pcConfig.iceTransportPolicy = 'relay';
+      console.log(`[pc:${peerId}] using relay-only ICE policy`);
+    }
+    peer.pc = new RTCPeerConnection(pcConfig);
 
     peer.pc.onicecandidate = (e) => {
-      if (e.candidate) sendSignal(peerId, { kind: 'ice', candidate: e.candidate });
+      if (e.candidate) {
+        sendSignal(peerId, { kind: 'ice', candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate });
+      } else {
+        sendSignal(peerId, { kind: 'ice', candidate: null });
+      }
+    };
+    peer.pc.onicegatheringstatechange = () => {
+      console.log(`[pc:${peerId}] iceGatheringState=${peer.pc.iceGatheringState}`);
     };
 
     peer.pc.onconnectionstatechange = () => {
@@ -386,8 +487,20 @@
       }
       updateHeaderForPeers();
     };
-    peer.pc.oniceconnectionstatechange = () => {
-      console.log(`[pc:${peerId}] iceConnectionState=${peer.pc.iceConnectionState}`);
+    peer.pc.oniceconnectionstatechange = async () => {
+      const iceSt = peer.pc.iceConnectionState;
+      console.log(`[pc:${peerId}] iceConnectionState=${iceSt}`);
+      if (iceSt === 'failed' && !peer.iceRetried) {
+        peer.iceRetried = true;
+        if (state.iceHasTurn) {
+          toast('Direct connection failed — retrying via relay…');
+          sendReconnectRequest(peerId, true);
+          await reconnectPeer(peerId, { iceTransportPolicy: 'relay' });
+        } else {
+          setBanner('Connection failed. Set METERED_APP_SUBDOMAIN + METERED_API_KEY on Railway.', 'warning');
+          toast('No TURN relay — cannot connect across networks');
+        }
+      }
     };
 
     peer.pc.ontrack = (e) => {
@@ -1351,7 +1464,7 @@
     state.myProfile = { name: ($('name-input').value || '').trim().slice(0, 40), av: null };
     location.hash = code;
     try {
-      await connectSignaling();
+      await Promise.all([connectSignaling(), loadIceConfig()]);
       state.ws.send(JSON.stringify({ type: 'join', room: code, mode: selectedMode }));
       showScreen('chat-screen');
       $('peer-avatar').textContent = code.charAt(0);
@@ -1415,6 +1528,7 @@
       myKeyPair: null,
       myProfile: { name: '', av: null },
       callPeerId: null,
+      iceServers: null, iceHasTurn: false, iceSource: '',
     });
     $('messages').innerHTML = '';
     $('msg-input').value = '';

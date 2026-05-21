@@ -44,11 +44,48 @@ let turnCache = { expires: 0, body: null };
 const STUN_FALLBACK = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
 ];
+
+function meteredHost() {
+  let h = (TURN_APP_SUBDOMAIN || '').trim();
+  if (!h) return '';
+  if (h.startsWith('https://')) h = h.slice(8);
+  if (h.startsWith('http://')) h = h.slice(7);
+  return h.replace(/\/+$/, '');
+}
+
+function normalizeIceServers(raw) {
+  if (!Array.isArray(raw)) return [...STUN_FALLBACK];
+  const out = [];
+  for (const entry of raw) {
+    if (!entry) continue;
+    let urls = entry.urls || entry.url;
+    if (!urls) continue;
+    if (!Array.isArray(urls)) urls = [String(urls)];
+    const item = { urls };
+    const user = entry.username || entry.user;
+    const cred = entry.credential || entry.password || entry.credentialPassword;
+    if (user) item.username = String(user);
+    if (cred) item.credential = String(cred);
+    out.push(item);
+  }
+  return out.length ? out : [...STUN_FALLBACK];
+}
+
+function iceHasTurn(servers) {
+  return servers.some((s) => {
+    const u = s.urls;
+    const list = Array.isArray(u) ? u : [u];
+    return list.some((x) => /^turns?:/i.test(String(x)));
+  });
+}
 
 function meteredRequest(method, path, body) {
   return new Promise((resolve, reject) => {
-    const url = new URL(`https://${TURN_APP_SUBDOMAIN}${path}`);
+    const host = meteredHost();
+    if (!host) { reject(new Error('no metered host')); return; }
+    const url = new URL(`https://${host}${path}`);
     const payload = body ? JSON.stringify(body) : null;
     const req = https.request(url, {
       method,
@@ -75,25 +112,32 @@ function meteredRequest(method, path, body) {
 }
 
 async function fetchTurnFromMetered() {
-  if (!TURN_APP_SUBDOMAIN || !METERED_SECRET_KEY) return STUN_FALLBACK;
+  if (!meteredHost() || !METERED_SECRET_KEY) {
+    return { servers: [...STUN_FALLBACK], source: 'stun-only' };
+  }
   try {
-    // 1) Create a short-lived TURN credential with the Secret Key
     const created = await meteredRequest(
       'POST',
       `/api/v1/turn/credential?secretKey=${encodeURIComponent(METERED_SECRET_KEY)}`,
       { expiryInSeconds: 86400, label: 'anon-messenger' },
     );
-    if (!created || !created.apiKey) return STUN_FALLBACK;
+    if (!created || !created.apiKey) {
+      return { servers: [...STUN_FALLBACK], source: 'metered-no-key' };
+    }
 
-    // 2) Fetch the ICE servers array for that credential
-    const iceServers = await meteredRequest(
+    const raw = await meteredRequest(
       'GET',
       `/api/v1/turn/credentials?apiKey=${encodeURIComponent(created.apiKey)}`,
     );
-    if (Array.isArray(iceServers) && iceServers.length > 0) return iceServers;
-    return STUN_FALLBACK;
-  } catch {
-    return STUN_FALLBACK;
+    const list = Array.isArray(raw) ? raw : (raw && raw.iceServers);
+    const servers = normalizeIceServers(list);
+    return {
+      servers,
+      source: iceHasTurn(servers) ? 'metered-turn' : 'metered-stun-only',
+    };
+  } catch (e) {
+    console.warn('[turn] Metered fetch failed:', e.message || e);
+    return { servers: [...STUN_FALLBACK], source: 'error' };
   }
 }
 
@@ -123,13 +167,17 @@ const httpServer = http.createServer(async (req, res) => {
     const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
 
     if (urlPath === '/api/turn') {
-      const iceServers = await getIceServers();
+      const cfg = await getIceServers();
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
       });
-      res.end(JSON.stringify({ iceServers }));
+      res.end(JSON.stringify({
+        iceServers: cfg.servers,
+        hasTurn: iceHasTurn(cfg.servers),
+        source: cfg.source,
+      }));
       return;
     }
 
@@ -453,6 +501,16 @@ function handleConnection(ws) {
         const target = ws._room.peers.get(toId);
         if (!target) return;
         safeSend(target, { type: 'signal', from: ws._peerId, payload: msg.payload });
+        return;
+      }
+
+      case 'reconnect': {
+        if (!ws._room || !ws._peerId) return;
+        const toId = typeof msg.to === 'string' ? msg.to : null;
+        if (!toId) return;
+        const target = ws._room.peers.get(toId);
+        if (!target) return;
+        safeSend(target, { type: 'reconnect', from: ws._peerId, relay: !!msg.relay });
         return;
       }
 
