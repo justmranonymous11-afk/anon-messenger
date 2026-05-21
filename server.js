@@ -329,12 +329,15 @@ class WsConnection {
 }
 
 // =================================================================
-// Signaling: rooms hold at most MAX_PEERS (5)
+// Signaling.
+// Each room has a mode set by its first joiner:
+//   '1on1'  - hard cap 2 peers (private chat + calls)
+//   'group' - hard cap 5 peers (mesh group chat, no group calls yet)
 // Each peer gets a server-assigned unique id; signals are routed via
 // `to: peerId`. Existing peers are notified when someone joins/leaves.
 // =================================================================
-const MAX_PEERS = 5;
-const rooms = new Map(); // roomId -> Map<peerId, WsConnection>
+const CAPS = { '1on1': 2, 'group': 5 };
+const rooms = new Map(); // roomId -> { mode, peers: Map<peerId, WsConnection> }
 
 function safeSend(ws, obj) {
   try { ws.send(JSON.stringify(obj)); } catch {}
@@ -352,11 +355,11 @@ function makePeerId() {
 function leave(ws) {
   const room = ws._room;
   if (!room || !ws._peerId) return;
-  room.delete(ws._peerId);
-  for (const peer of room.values()) {
+  room.peers.delete(ws._peerId);
+  for (const peer of room.peers.values()) {
     safeSend(peer, { type: 'peer-left', id: ws._peerId });
   }
-  if (room.size === 0 && ws._roomId) rooms.delete(ws._roomId);
+  if (room.peers.size === 0 && ws._roomId) rooms.delete(ws._roomId);
   ws._room = null;
   ws._roomId = null;
   ws._peerId = null;
@@ -378,14 +381,26 @@ function handleConnection(ws) {
         if (!/^[A-Z0-9]{4,12}$/.test(roomId)) {
           safeSend(ws, { type: 'error', error: 'Invalid room code' }); return;
         }
+        const requestedMode = (msg.mode === 'group' || msg.mode === '1on1') ? msg.mode : '1on1';
         let room = rooms.get(roomId);
-        if (!room) { room = new Map(); rooms.set(roomId, room); }
-        if (room.size >= MAX_PEERS) {
-          safeSend(ws, { type: 'error', error: `Room is full (max ${MAX_PEERS} users)` }); return;
+        if (!room) {
+          // First joiner sets the room mode.
+          room = { mode: requestedMode, peers: new Map() };
+          rooms.set(roomId, room);
+        }
+        const cap = CAPS[room.mode] || 2;
+        if (room.peers.size >= cap) {
+          safeSend(ws, {
+            type: 'error',
+            error: room.mode === 'group'
+              ? `Group room is full (max ${cap} users)`
+              : `Private room is full (already has 2 people)`,
+          });
+          return;
         }
         const myId = makePeerId();
-        const existingIds = Array.from(room.keys());
-        room.set(myId, ws);
+        const existingIds = Array.from(room.peers.keys());
+        room.peers.set(myId, ws);
         ws._room = room;
         ws._roomId = roomId;
         ws._peerId = myId;
@@ -393,10 +408,10 @@ function handleConnection(ws) {
           type: 'joined',
           room: roomId,
           you: myId,
-          peers: existingIds, // peers that were already here (you must initiate to them)
+          mode: room.mode,
+          peers: existingIds,
         });
-        // Notify the existing peers about the newcomer
-        for (const [id, peer] of room) {
+        for (const [id, peer] of room.peers) {
           if (id === myId) continue;
           safeSend(peer, { type: 'peer-joined', id: myId });
         }
@@ -407,7 +422,7 @@ function handleConnection(ws) {
         if (!ws._room || !ws._peerId) return;
         const toId = typeof msg.to === 'string' ? msg.to : null;
         if (!toId) return;
-        const target = ws._room.get(toId);
+        const target = ws._room.peers.get(toId);
         if (!target) return;
         safeSend(target, { type: 'signal', from: ws._peerId, payload: msg.payload });
         return;

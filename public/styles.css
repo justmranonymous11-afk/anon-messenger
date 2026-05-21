@@ -263,6 +263,65 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--bubble-in);
   border-bottom-left-radius: 6px;
 }
+/* ============ Mode picker on join screen ============ */
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.mode-opt {
+  display: flex; flex-direction: column;
+  align-items: flex-start; gap: 2px;
+  padding: 12px 14px;
+  background: var(--bg-3);
+  border: 1.5px solid transparent;
+  border-radius: 14px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .05s;
+}
+.mode-opt:hover { background: rgba(255,255,255,0.04); }
+.mode-opt:active { transform: scale(0.985); }
+.mode-opt svg { color: var(--accent-3); }
+.mode-opt span {
+  font-size: 15px; font-weight: 600;
+  margin-top: 4px;
+}
+.mode-opt small {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+.mode-opt.active {
+  border-color: var(--accent-3);
+  background: rgba(0,194,168,0.10);
+}
+.mode-opt.active svg { color: white; }
+.mode-opt.active span { color: white; }
+
+/* ============ Mode tag in chat header ============ */
+.peer-name-row {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
+.mode-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0,194,168,0.18);
+  color: var(--accent-3);
+  flex-shrink: 0;
+}
+.mode-tag.group {
+  background: rgba(124,140,255,0.18);
+  color: #B3BCFF;
+}
+.mode-tag.hidden { display: none; }
+
 /* Sender label shown for incoming group messages */
 .bubble .sender {
   font-size: 12px;

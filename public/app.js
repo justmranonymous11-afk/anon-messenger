@@ -67,6 +67,7 @@
     ws: null,
     myId: null,               // server-assigned id for THIS connection
     room: null,
+    roomMode: '1on1',         // '1on1' | 'group' — set on join, confirmed by server
     myKeyPair: null,          // ECDH key pair, shared across all peer derivations
     peers: new Map(),         // peerId -> Peer
     // 1-on-1 call (only when peers.size === 1). Group calls = future.
@@ -187,15 +188,26 @@
       case 'joined': {
         state.myId = msg.you;
         if (!state.myKeyPair) state.myKeyPair = await generateKeyPair();
+        const previousMode = state.roomMode;
+        if (msg.mode) state.roomMode = msg.mode;
+        if (previousMode && previousMode !== state.roomMode) {
+          toast(`Room already exists as ${state.roomMode === 'group' ? 'a group' : '1-on-1'} — joining in that mode.`);
+        }
+        updateModeIndicator();
         const existing = Array.isArray(msg.peers) ? msg.peers : [];
         if (existing.length === 0) {
-          showSystemMessage('Waiting for others to join…');
+          showSystemMessage(state.roomMode === 'group'
+            ? 'Group room created. Waiting for others to join…'
+            : 'Waiting for the other person to join…');
           setStatus('waiting', false);
         } else {
           showSystemMessage(`Connecting to ${existing.length} peer${existing.length>1?'s':''}…`);
           setStatus('connecting…', false);
           for (const peerId of existing) {
-            await ensurePeerConnection(peerId, /*weInitiate=*/true);
+            // Symmetric initiator role: the lex-smaller id is impolite (initiates).
+            // Both sides compute the same answer, so exactly one peer creates the DC.
+            const weInitiate = state.myId < peerId;
+            await ensurePeerConnection(peerId, weInitiate);
           }
         }
         updateHeaderForPeers();
@@ -204,9 +216,6 @@
 
       case 'peer-joined': {
         if (!msg.id || msg.id === state.myId) return;
-        // Existing peer reacts to a newcomer. The peer with the LEXICOGRAPHICALLY
-        // smaller id is the "impolite" one (initiator). This is symmetric so both
-        // sides compute the same role assignment.
         const weInitiate = state.myId < msg.id;
         await ensurePeerConnection(msg.id, weInitiate);
         showSystemMessage('A peer joined the room.');
@@ -495,10 +504,18 @@
     const ready = anyPeerReady();
     const composerIds = ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn'];
     composerIds.forEach(id => { const el = $(id); if (el) el.disabled = !ready; });
-    // Call buttons: only available when exactly 1 peer (1-on-1 mode).
-    const callable = ready && peerCount() === 1;
+    // Calls are only enabled in 1-on-1 mode AND when the one peer is connected.
+    const callable = ready && state.roomMode === '1on1' && peerCount() === 1;
     const audio = $('audio-call-btn'); if (audio) audio.disabled = !callable;
     const video = $('video-call-btn'); if (video) video.disabled = !callable;
+    // In group mode, give the call buttons a helpful tooltip explaining they're off.
+    if (state.roomMode === 'group') {
+      if (audio) audio.title = 'Group calls are not available yet';
+      if (video) video.title = 'Group calls are not available yet';
+    } else {
+      if (audio) audio.title = 'Audio call';
+      if (video) video.title = 'Video call';
+    }
     if (ready) {
       $('msg-input').focus();
       setStatus('online', true);
@@ -1183,25 +1200,68 @@
     $('room-input').value = randCode(6);
   }
 
+  // Mode toggle (segmented control)
+  let selectedMode = '1on1';
+  function setMode(mode) {
+    selectedMode = mode;
+    document.querySelectorAll('.mode-opt').forEach(b => {
+      const active = b.dataset.mode === mode;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+    const hint = $('room-hint');
+    if (hint) {
+      hint.textContent = mode === 'group'
+        ? 'Share this code with your group. Up to 5 people can join.'
+        : 'Share this code with one other person. Both must enter it.';
+    }
+  }
+  document.querySelectorAll('.mode-opt').forEach(b => {
+    b.addEventListener('click', () => setMode(b.dataset.mode));
+  });
+  setMode('1on1');
+
   $('join-btn').addEventListener('click', async () => {
     const code = $('room-input').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4,12}$/.test(code)) { toast('Room code must be 4–12 letters/digits'); return; }
     state.room = code;
+    state.roomMode = selectedMode;
     state.myProfile = { name: ($('name-input').value || '').trim().slice(0, 40), av: null };
     location.hash = code;
     try {
       await connectSignaling();
-      state.ws.send(JSON.stringify({ type: 'join', room: code }));
+      state.ws.send(JSON.stringify({ type: 'join', room: code, mode: selectedMode }));
       showScreen('chat-screen');
       $('peer-avatar').textContent = code.charAt(0);
       $('peer-avatar').style.backgroundImage = '';
-      document.querySelector('.peer-name').textContent = 'Anonymous peer';
+      document.querySelector('.peer-name').textContent =
+        selectedMode === 'group' ? 'Group room' : 'Anonymous peer';
       applyMyProfile();
-      showSystemMessage(`Room "${code}" — anyone with this code can join (up to 5 people total).`);
+      const intro = selectedMode === 'group'
+        ? `Group room "${code}" — up to 5 people can join.`
+        : `Room "${code}" — private 1-on-1.`;
+      showSystemMessage(intro);
       setBanner('Verifying secure channel…', 'info');
       setStatus('connecting…', false);
+      updateModeIndicator();
     } catch { toast('Could not reach server'); }
   });
+
+  function updateModeIndicator() {
+    const tag = $('mode-tag');
+    if (!tag) return;
+    if (state.roomMode === 'group') {
+      tag.textContent = 'Group';
+      tag.classList.remove('hidden');
+      tag.classList.add('group');
+    } else if (state.roomMode === '1on1') {
+      tag.textContent = '1-on-1';
+      tag.classList.remove('hidden');
+      tag.classList.remove('group');
+    } else {
+      tag.classList.add('hidden');
+    }
+  }
 
   $('back-btn').addEventListener('click', () => {
     if (!confirm('Leave this room? Messages will be deleted.')) return;
