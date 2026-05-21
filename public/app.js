@@ -309,14 +309,15 @@
 
     peer.pc.onconnectionstatechange = () => {
       const st = peer.pc.connectionState;
-      if (st === 'failed' || st === 'closed') {
-        // Note: don't auto-remove on 'disconnected' (transient).
-        // We'll get an explicit peer-left from the server.
-      }
+      console.log(`[pc:${peerId}] connectionState=${st}`);
       updateHeaderForPeers();
+    };
+    peer.pc.oniceconnectionstatechange = () => {
+      console.log(`[pc:${peerId}] iceConnectionState=${peer.pc.iceConnectionState}`);
     };
 
     peer.pc.ontrack = (e) => {
+      console.log(`[pc:${peerId}] ontrack kind=${e.track.kind}`);
       // In 1-on-1 calls only (current implementation). Group video = future.
       if (peerCount() > 1) return;
       const remoteVideo = $('remote-video');
@@ -324,15 +325,19 @@
       const ms = remoteVideo.srcObject;
       ms.getTracks().filter(t => t.kind === e.track.kind).forEach(t => ms.removeTrack(t));
       ms.addTrack(e.track);
+      // Force playback (audio elements with display:none still play audio,
+      // but Safari is picky about autoplay until there's interaction).
+      remoteVideo.play().catch(() => {});
     };
 
     peer.pc.onnegotiationneeded = async () => {
       try {
         peer.makingOffer = true;
+        console.log(`[pc:${peerId}] negotiationneeded -> creating offer`);
         await peer.pc.setLocalDescription();
         sendSignal(peerId, { kind: 'description', description: peer.pc.localDescription });
       } catch (e) {
-        console.error('negotiation error:', e);
+        console.error(`[pc:${peerId}] negotiation error`, e);
       } finally {
         peer.makingOffer = false;
       }
@@ -357,6 +362,7 @@
     const offerCollision =
       description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
     peer.ignoreOffer = !peer.polite && offerCollision;
+    console.log(`[pc:${peer.id}] remote ${description.type}, collision=${offerCollision}, ignoring=${peer.ignoreOffer}, state=${pc.signalingState}`);
     if (peer.ignoreOffer) return;
     if (offerCollision) {
       await Promise.all([
@@ -379,13 +385,24 @@
     peer.safetyNumber = safetyNumber;
     updateSecurityBanner();
     enableChatIfReady();
+    // RACE FIX: dc.onopen may have fired BEFORE the pubkey arrived, in which
+    // case sendMyProfileTo would have returned early (no sessionKey). Now that
+    // we DO have the session key, send the profile if it hasn't been sent yet.
+    if (peer.dc && peer.dc.readyState === 'open' && !peer.profileSentToThem) {
+      sendMyProfileTo(peer);
+    }
   }
 
   function setupDataChannel(peer, dc) {
     peer.dc = dc;
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 64 * 1024;
-    dc.onopen = () => { enableChatIfReady(); sendMyProfileTo(peer); };
+    dc.onopen = () => {
+      enableChatIfReady();
+      // Try to send the profile. If sessionKey isn't ready yet, this returns
+      // early and onPeerPublicKey will retry once the key is derived.
+      sendMyProfileTo(peer);
+    };
     dc.onclose = () => { updateHeaderForPeers(); };
     dc.onmessage = (ev) => onDcMessage(peer, ev.data);
   }
@@ -465,26 +482,40 @@
           try {
             const plain = await decryptText(peer.sessionKey, msg.p);
             const obj = JSON.parse(plain);
+            const prevName = peer.profile.name;
             peer.profile = { name: String(obj.name || '').slice(0, 40), av: obj.av || null };
             updateHeaderForPeers();
+            // Subtle system message when a peer renames mid-session (excluding
+            // the initial profile send which would spam on every join).
+            const newName = peer.profile.name;
+            if (prevName && newName && prevName !== newName) {
+              showSystemMessage(`${prevName} is now ${newName}`);
+            }
           } catch (e) { console.warn('Bad profile', e); }
           return;
         }
         // Calls — only meaningful when we're 1-on-1 (peerCount === 1).
         case 'call-invite':
-          if (peerCount() > 1) { /* ignore in group mode */ return; }
+          console.log('[call] received invite', msg.callType, 'from', peer.id);
+          if (peerCount() > 1) {
+            console.log('[call] ignored: group mode');
+            return;
+          }
           state.callPeerId = peer.id;
           showIncomingCall(msg.callType);
           return;
         case 'call-accept':
+          console.log('[call] received accept from', peer.id, 'expected', state.callPeerId);
           if (peer.id !== state.callPeerId) return;
           onCallAccepted();
           return;
         case 'call-decline':
+          console.log('[call] received decline from', peer.id);
           if (peer.id !== state.callPeerId) return;
           onCallDeclined();
           return;
         case 'call-end':
+          console.log('[call] received call-end from', peer.id);
           if (peer.id !== state.callPeerId) return;
           teardownCall();
           showSystemMessage('Call ended.');
@@ -636,7 +667,13 @@
       av: state.myProfile.av || null,
     });
     try {
-      await dcBroadcastEncryptedText(payload, { t: 'profile' });
+      const sent = await dcBroadcastEncryptedText(payload, { t: 'profile' });
+      for (const peer of state.peers.values()) {
+        if (peer.dc && peer.dc.readyState === 'open' && peer.sessionKey) {
+          peer.profileSentToThem = true;
+        }
+      }
+      return sent;
     } catch (e) { console.warn('profile broadcast failed', e); }
   }
 
@@ -649,6 +686,7 @@
       });
       const p = await encryptText(peer.sessionKey, payload);
       dcSendTo(peer, { t: 'profile', p });
+      peer.profileSentToThem = true;
     } catch (e) { console.warn('profile send to peer failed', e); }
   }
 
@@ -1305,21 +1343,44 @@
   }
 
   async function startCall(type) {
-    if (state.callActive) return;
+    console.log('[call] startCall', type, 'peers:', peerCount(), 'mode:', state.roomMode);
+    if (state.callActive) { toast('Already in a call'); return; }
     if (peerCount() !== 1) {
       toast('Calls are only available in 1-on-1 mode (group calls coming soon)');
       return;
     }
     const peer = state.peers.values().next().value;
+    console.log('[call] target peer:', peer && peer.id, 'dc:', peer && peer.dc && peer.dc.readyState);
     if (!peer || !peer.dc || peer.dc.readyState !== 'open') {
       toast('Peer not connected yet'); return;
     }
-    try { state.localStream = await getMedia(type === 'video'); }
-    catch { toast('Microphone/camera permission denied'); return; }
+    try {
+      state.localStream = await getMedia(type === 'video');
+      console.log('[call] got local stream, tracks:', state.localStream.getTracks().map(t => t.kind));
+    }
+    catch (e) {
+      console.error('[call] getMedia failed', e);
+      toast('Microphone/camera permission denied');
+      return;
+    }
     state.callType = type;
     state.callPeerId = peer.id;
-    addLocalTracks(peer);
-    dcSendTo(peer, { t: 'call-invite', callType: type });
+    try {
+      addLocalTracks(peer);
+      console.log('[call] tracks added, awaiting renegotiation');
+    } catch (e) {
+      console.error('[call] addLocalTracks failed', e);
+      toast('Could not start call (track error)');
+      teardownCall();
+      return;
+    }
+    const delivered = dcSendTo(peer, { t: 'call-invite', callType: type });
+    console.log('[call] invite delivered to DC:', delivered);
+    if (!delivered) {
+      toast('Could not reach peer');
+      teardownCall();
+      return;
+    }
     showCallOverlay(type, 'Ringing…');
   }
 
