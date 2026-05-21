@@ -129,6 +129,9 @@ button { font-family: inherit; cursor: pointer; }
   display: flex; align-items: center; gap: 12px;
   background: var(--bg-2);
   padding: 10px 14px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  padding-left: max(14px, env(safe-area-inset-left));
+  padding-right: max(14px, env(safe-area-inset-right));
   border-bottom: 1px solid rgba(0,0,0,0.3);
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   flex-shrink: 0;
@@ -139,13 +142,23 @@ button { font-family: inherit; cursor: pointer; }
   width: 40px; height: 40px;
   display: flex; align-items: center; justify-content: center;
   font-size: 20px;
-  transition: background .15s, color .15s;
+  flex-shrink: 0;
+  transition: background .15s, color .15s, opacity .15s;
 }
 .icon-btn:hover:not(:disabled) { background: var(--bg-3); }
-.icon-btn:disabled { color: var(--text-dim); cursor: not-allowed; opacity: 0.5; }
+.icon-btn:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
 .icon-btn.active { color: var(--accent-3); }
 
 .peer-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.peer-name, .peer-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .avatar {
   width: 40px; height: 40px; border-radius: 50%;
   background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
@@ -159,7 +172,17 @@ button { font-family: inherit; cursor: pointer; }
 .peer-status { font-size: 12px; color: var(--text-dim); }
 .peer-status.online { color: var(--success); }
 
-.header-actions { display: flex; gap: 4px; }
+.header-actions { display: flex; gap: 4px; flex-shrink: 0; }
+/* Make call-action buttons in the header always visible, even when disabled,
+   so users can see at a glance that calling is supported. */
+.header-actions .icon-btn:disabled {
+  opacity: 0.85;
+  background: rgba(0,194,168,0.08);
+  color: var(--accent-3);
+}
+.header-actions .icon-btn:not(:disabled) {
+  color: var(--accent-3);
+}
 
 .security-banner {
   background: rgba(79,203,133,0.1);
@@ -284,6 +307,9 @@ button { font-family: inherit; cursor: pointer; }
 /* ============ Composer ============ */
 .composer {
   display: flex; gap: 6px; padding: 8px 10px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
   background: var(--bg-2);
   border-top: 1px solid rgba(0,0,0,0.3);
   flex-shrink: 0;
@@ -507,9 +533,36 @@ button { font-family: inherit; cursor: pointer; }
 /* ============ Mobile ============ */
 @media (max-width: 480px) {
   .join-card { padding: 24px 18px; }
-  #local-video { width: 100px; height: 140px; top: 12px; right: 12px; }
-  .call-controls { bottom: 24px; gap: 12px; }
+
+  /* Apple HIG recommends min 44pt touch targets; bump call/icon buttons. */
+  .chat-header { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .header-actions { gap: 2px; }
+  /* Make call buttons stand out: filled circle background */
+  .header-actions .icon-btn {
+    background: rgba(0,194,168,0.12);
+    color: var(--accent-3);
+  }
+  .header-actions .icon-btn:disabled {
+    background: rgba(0,194,168,0.06);
+  }
+
+  /* Call overlay */
+  #local-video {
+    width: 96px; height: 132px;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+  }
+  .call-info {
+    top: max(20px, env(safe-area-inset-top));
+    left: max(20px, env(safe-area-inset-left));
+  }
+  .call-controls {
+    bottom: max(24px, env(safe-area-inset-bottom));
+    gap: 14px;
+  }
   .call-btn { width: 56px; height: 56px; }
+
   .bubble.sticker .sticker-emoji { font-size: 64px; }
 }
 
