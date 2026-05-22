@@ -31,6 +31,52 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 4040;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Web Push (optional — install with `npm install`). Generic "new message" only; no content.
+let webpush = null;
+let vapidKeys = null;
+try {
+  webpush = require('web-push');
+} catch {
+  console.warn('[push] web-push not installed — run npm install for background notifications');
+}
+
+function getVapidKeys() {
+  if (vapidKeys) return vapidKeys;
+  if (!webpush) return null;
+  const pub = (process.env.VAPID_PUBLIC_KEY || '').trim();
+  const priv = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  if (pub && priv) {
+    vapidKeys = { publicKey: pub, privateKey: priv };
+  } else {
+    vapidKeys = webpush.generateVAPIDKeys();
+    console.warn(
+      '[push] Auto-generated VAPID keys (set on Railway so they persist across deploys):\n' +
+      `  VAPID_PUBLIC_KEY=${vapidKeys.publicKey}\n` +
+      `  VAPID_PRIVATE_KEY=${vapidKeys.privateKey}`
+    );
+  }
+  webpush.setVapidDetails(
+    (process.env.VAPID_SUBJECT || 'mailto:anon@localhost').trim(),
+    vapidKeys.publicKey,
+    vapidKeys.privateKey
+  );
+  return vapidKeys;
+}
+
+function sendPushTo(ws, data) {
+  if (!webpush || !ws._pushSub) return;
+  const keys = getVapidKeys();
+  if (!keys) return;
+  const payload = JSON.stringify({
+    title: data.title || 'Anon Messenger',
+    body: data.body || 'New message',
+    room: data.room || ws._roomId || '',
+  });
+  webpush.sendNotification(ws._pushSub, payload).catch((err) => {
+    if (err && err.statusCode === 410) ws._pushSub = null;
+  });
+}
+
 // TURN / ICE configuration (priority order):
 //   1) TURN_SERVERS or ICE_SERVERS_JSON — raw JSON array of RTCIceServer objects
 //   2) Metered.ca — METERED_APP_SUBDOMAIN (+ optional METERED_DOMAIN / METERED_APP_NAME)
@@ -303,6 +349,7 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
 // =================================================================
@@ -311,6 +358,19 @@ const MIME = {
 const httpServer = http.createServer(async (req, res) => {
   try {
     const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+    if (urlPath === '/api/push-vapid') {
+      const keys = getVapidKeys();
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({
+        publicKey: keys ? keys.publicKey : null,
+        enabled: !!keys,
+      }));
+      return;
+    }
 
     if (urlPath === '/api/turn') {
       const force = (req.url || '').includes('refresh=1');
@@ -572,6 +632,7 @@ function makePeerId() {
 function leave(ws) {
   const room = ws._room;
   if (!room || !ws._peerId) return;
+  ws._pushSub = null;
   room.peers.delete(ws._peerId);
   for (const peer of room.peers.values()) {
     safeSend(peer, { type: 'peer-left', id: ws._peerId });
@@ -601,6 +662,7 @@ function handleConnection(ws) {
   ws._room = null;
   ws._roomId = null;
   ws._peerId = null;
+  ws._pushSub = null;
 
   ws.on('message', (data) => {
     let msg;
@@ -681,6 +743,38 @@ function handleConnection(ws) {
         const target = ws._room.peers.get(toId);
         if (!target) return;
         safeSend(target, { type: 'relay', from: ws._peerId, payload });
+        sendPushTo(target, {
+          title: 'Anon Messenger',
+          body: 'New message',
+          room: ws._roomId,
+        });
+        return;
+      }
+
+      case 'nudge': {
+        if (!ws._room || !ws._peerId) return;
+        const toId = typeof msg.to === 'string' ? msg.to : null;
+        if (!toId) return;
+        const target = ws._room.peers.get(toId);
+        if (!target) return;
+        sendPushTo(target, {
+          title: 'Anon Messenger',
+          body: 'New message',
+          room: ws._roomId,
+        });
+        return;
+      }
+
+      case 'push-sub': {
+        if (!ws._room || !ws._peerId) return;
+        const sub = msg.subscription;
+        if (!sub || typeof sub !== 'object' || !sub.endpoint) return;
+        ws._pushSub = sub;
+        return;
+      }
+
+      case 'push-unsub': {
+        ws._pushSub = null;
         return;
       }
 

@@ -94,7 +94,10 @@
     iceHasTurn: false,
     iceSource: '',
     forceRelay: false,       // true when no TURN — chat uses encrypted WS relay
+    inChat: false,
+    pushEnabled: false,
   };
+  let joinedWaiters = [];
 
   function newPeer(id) {
     return {
@@ -182,6 +185,23 @@
   // ===========================================================
   // Signaling (WebSocket)
   // ===========================================================
+  function wsConnected() {
+    return state.ws && state.ws.readyState === WebSocket.OPEN;
+  }
+
+  function waitForJoined(ms = 20000) {
+    if (joinedReady && state.myId) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('join timeout')), ms);
+      joinedWaiters.push(() => { clearTimeout(t); resolve(); });
+    });
+  }
+
+  function resolveJoinedWaiters() {
+    const w = joinedWaiters.splice(0);
+    w.forEach((fn) => fn());
+  }
+
   function connectSignaling() {
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -194,7 +214,11 @@
         try { msg = JSON.parse(ev.data); } catch { return; }
         enqueueSignal(() => handleSignal(msg));
       };
-      ws.onclose = () => setStatus('disconnected', false);
+      ws.onclose = () => {
+        state.ws = null;
+        setStatus('disconnected', false);
+        updateReconnectBanner();
+      };
     });
   }
 
@@ -268,6 +292,8 @@
         }
         updateHeaderForPeers();
         joinedReady = true;
+        resolveJoinedWaiters();
+        updateReconnectBanner();
         const queued = preJoinQueue.splice(0);
         for (const m of queued) await handleSignal(m);
         break;
@@ -355,6 +381,7 @@
           setBanner('Everyone left. Waiting for others to join…', 'info');
           disableComposer();
         }
+        updateReconnectBanner();
         break;
       }
 
@@ -676,15 +703,18 @@
         case 'msg': {
           const text = await decryptText(peer.sessionKey, msg.p);
           renderMessage({ id: msg.id, kind: 'text', text, from: peer }, 'in');
+          notifyIncoming(peer, text.length > 80 ? text.slice(0, 77) + '…' : text);
           return;
         }
         case 'sticker':
           renderMessage({ id: msg.id, kind: 'sticker', sticker: msg.s, from: peer }, 'in');
+          notifyIncoming(peer, 'Sticker');
           return;
         case 'audio': {
           const bytes = await decryptBytes(peer.sessionKey, msg.p);
           const blob = new Blob([bytes], { type: msg.mime || 'audio/webm' });
           renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: msg.dur, from: peer }, 'in');
+          notifyIncoming(peer, 'Voice message');
           return;
         }
         case 'msg-del':
@@ -734,13 +764,17 @@
           const blob = new Blob([merged], { type: entry.mime || 'application/octet-stream' });
           if (entry.kind === 'audio') {
             renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: entry.dur, from: peer }, 'in');
+            notifyIncoming(peer, 'Voice message');
           } else if (entry.kind === 'file') {
             const url = URL.createObjectURL(blob);
-            const isImage = (entry.mime || '').startsWith('image/');
+            const mk = mediaKindFromMime(entry.mime, entry.name);
+            const bubbleKind = mk === 'image' ? 'image' : (mk === 'video' || mk === 'pdf' ? mk : 'file');
             renderMessage({
-              id: msg.id, kind: isImage ? 'image' : 'file',
+              id: msg.id, kind: bubbleKind,
               url, name: entry.name, mime: entry.mime, size: totalLen, from: peer,
+              previewKind: mk,
             }, 'in');
+            notifyIncoming(peer, entry.name || 'File');
           }
           return;
         }
@@ -822,6 +856,62 @@
       updatePresenceUI();
       updateSecurityBanner();
     }
+    updateReconnectBanner();
+  }
+
+  function needsReconnect() {
+    if (!state.inChat || !state.room || state._reconnecting) return false;
+    if (!wsConnected()) return true;
+    return peerCount() > 0 && !anyPeerReady();
+  }
+
+  function updateReconnectBanner() {
+    const banner = $('reconnect-banner');
+    if (!banner) return;
+    const show = needsReconnect() && !state._reconnecting;
+    banner.classList.toggle('hidden', !show);
+    const txt = $('reconnect-banner-text');
+    if (txt) {
+      if (!wsConnected()) txt.textContent = 'Connection lost';
+      else txt.textContent = 'Chat disconnected';
+    }
+  }
+
+  async function reconnectSession() {
+    if (!state.room || state._reconnecting) return;
+    state._reconnecting = true;
+    updateReconnectBanner();
+    showSystemMessage('Reconnecting…');
+    try {
+      for (const peer of state.peers.values()) {
+        try { peer.dc && peer.dc.close(); } catch {}
+        try { peer.pc && peer.pc.close(); } catch {}
+      }
+      state.peers.clear();
+      joinedReady = false;
+      preJoinQueue.length = 0;
+      signalInbox = Promise.resolve();
+
+      if (!wsConnected()) {
+        try { state.ws && state.ws.close(); } catch {}
+        await connectSignaling();
+      }
+      if (!state.myKeyPair) state.myKeyPair = await generateKeyPair();
+      state.ws.send(JSON.stringify({
+        type: 'join', room: state.room, mode: state.roomMode,
+      }));
+      await waitForJoined();
+      await loadIceConfig();
+      toast('Reconnected');
+      showSystemMessage('Back online — you can chat again.');
+      await initPushSubscription();
+    } catch (e) {
+      console.warn('[reconnect]', e);
+      toast('Reconnect failed — tap Reconnect to try again');
+    } finally {
+      state._reconnecting = false;
+      updateReconnectBanner();
+    }
   }
   function disableComposer() {
     ['msg-input','send-btn','sticker-btn','attach-btn','mic-btn','audio-call-btn','video-call-btn']
@@ -857,6 +947,9 @@
     for (const peer of state.peers.values()) {
       if (dcSendTo(peer, obj)) sent++;
     }
+    if (sent > 0 && obj.t && obj.t !== 'typing' && obj.t !== 'presence' && obj.t !== 'read') {
+      sendPushNudge();
+    }
     return sent;
   }
 
@@ -869,6 +962,9 @@
       if (!peerTransportReady(peer)) continue;
       const p = await encryptText(peer.sessionKey, plaintext);
       if (dcSendTo(peer, { ...baseMessage, p })) sent++;
+    }
+    if (sent > 0 && baseMessage.t && !['typing', 'presence', 'read'].includes(baseMessage.t)) {
+      sendPushNudge();
     }
     return sent;
   }
@@ -904,6 +1000,160 @@
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
   }
 
+  function mediaKindFromMime(mime, name) {
+    const m = (mime || '').toLowerCase();
+    const ext = (name || '').split('.').pop().toLowerCase();
+    if (m.startsWith('image/')) return 'image';
+    if (m.startsWith('video/')) return 'video';
+    if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (m.startsWith('audio/')) return 'audio';
+    return 'file';
+  }
+
+  function fileTypeLabel(mime, name) {
+    const k = mediaKindFromMime(mime, name);
+    if (k === 'pdf') return 'PDF';
+    if (k === 'video') return 'Video';
+    if (k === 'audio') return 'Audio';
+    const ext = (name || '').split('.').pop();
+    return ext ? ext.toUpperCase() : 'File';
+  }
+
+  function sendPushNudge() {
+    if (!wsConnected() || !state.pushEnabled) return;
+    for (const peer of state.peers.values()) {
+      state.ws.send(JSON.stringify({ type: 'nudge', to: peer.id }));
+    }
+  }
+
+  function urlBase64ToUint8Array(base64) {
+    const pad = '='.repeat((4 - (base64.length % 4)) % 4);
+    const b64 = (base64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  async function initPushSubscription() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (Notification.permission === 'denied') return;
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const res = await fetch('/api/push-vapid');
+      const { publicKey, enabled } = await res.json();
+      if (!enabled || !publicKey) return;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        if (Notification.permission === 'default') return;
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+      if (wsConnected()) {
+        state.ws.send(JSON.stringify({ type: 'push-sub', subscription: sub.toJSON() }));
+        state.pushEnabled = true;
+      }
+    } catch (e) {
+      console.warn('[push] subscribe failed', e);
+    }
+  }
+
+  async function enableNotifications() {
+    if (!('Notification' in window)) {
+      toast('Notifications not supported on this browser');
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      toast('Notifications blocked');
+      return;
+    }
+    await initPushSubscription();
+    toast('Notifications on');
+    const btn = $('notify-btn');
+    if (btn) btn.classList.add('active');
+  }
+
+  function notifyIncoming(peer, summary) {
+    const name = (peer && peer.profile && peer.profile.name || '').trim() || 'Someone';
+    if (document.hidden && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(name, {
+          body: summary,
+          icon: '/icon-192.svg',
+          tag: state.room ? `room-${state.room}` : 'anon',
+        });
+        n.onclick = () => { window.focus(); n.close(); };
+      } catch { /* ignore */ }
+    }
+  }
+
+  function openFilePreview(m) {
+    const overlay = $('preview-overlay');
+    const body = $('preview-body');
+    const nameEl = $('preview-name');
+    const dl = $('preview-download');
+    if (!overlay || !body) return;
+    nameEl.textContent = m.name || 'File';
+    dl.href = m.url;
+    dl.download = m.name || 'download';
+    body.innerHTML = '';
+    const kind = m.previewKind || mediaKindFromMime(m.mime, m.name);
+    if (kind === 'image') {
+      const img = document.createElement('img');
+      img.src = m.url;
+      img.alt = m.name || 'image';
+      body.appendChild(img);
+    } else if (kind === 'video') {
+      const v = document.createElement('video');
+      v.src = m.url;
+      v.controls = true;
+      v.playsInline = true;
+      v.autoplay = true;
+      body.appendChild(v);
+    } else if (kind === 'pdf') {
+      const iframe = document.createElement('iframe');
+      iframe.src = m.url;
+      iframe.title = m.name || 'PDF';
+      body.appendChild(iframe);
+    } else {
+      const box = document.createElement('div');
+      box.className = 'preview-generic';
+      box.innerHTML = `
+        <div class="preview-generic-icon">${escapeHtml(fileTypeLabel(m.mime, m.name))}</div>
+        <div class="preview-generic-name">${escapeHtml(m.name || 'File')}</div>
+        <div class="preview-generic-size">${formatBytes(m.size || 0)}</div>`;
+      body.appendChild(box);
+    }
+    overlay.classList.remove('hidden');
+  }
+
+  function closeFilePreview() {
+    const overlay = $('preview-overlay');
+    const body = $('preview-body');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    if (body) {
+      body.querySelectorAll('video').forEach(v => { try { v.pause(); } catch {} });
+      body.innerHTML = '';
+    }
+  }
+
+  function wireFilePreview(el, m) {
+    const open = () => openFilePreview(m);
+    el.querySelectorAll('.media-preview, .file-row, img').forEach(node => {
+      node.addEventListener('click', (e) => {
+        if (e.target.closest('a.file-dl')) return;
+        e.preventDefault();
+        open();
+      });
+    });
+    const row = el.querySelector('.file-row');
+    if (row) row.style.cursor = 'pointer';
+  }
+
   async function sendFiles(fileList) {
     if (!anyPeerReady()) { toast('Not connected yet'); return; }
     for (const file of fileList) {
@@ -927,10 +1177,12 @@
         if (placeholder) {
           const url = URL.createObjectURL(new Blob([bytes], { type: file.type || 'application/octet-stream' }));
           placeholder.remove();
-          const isImage = (file.type || '').startsWith('image/');
+          const kind = mediaKindFromMime(file.type, file.name);
+          const bubbleKind = kind === 'image' ? 'image' : (kind === 'video' || kind === 'pdf' ? kind : 'file');
           renderMessage({
-            id: placeholderId, kind: isImage ? 'image' : 'file',
+            id: placeholderId, kind: bubbleKind,
             url, name: file.name, mime: file.type, size: file.size,
+            previewKind: kind,
           }, 'out');
         }
       } catch (e) {
@@ -1275,6 +1527,29 @@
     if (m.kind === 'text') {
       div.dataset.text = m.text;
       div.innerHTML = `${senderHeader}${linkify(escapeHtml(m.text))}${bubbleMetaHtml(direction)}`;
+    } else if (m.kind === 'video') {
+      div.classList.add('video', 'image');
+      div.innerHTML = `
+        ${senderHeader}
+        <div class="media-preview" role="button" tabindex="0" aria-label="Open video">
+          <video src="${m.url}" muted playsinline preload="metadata"></video>
+          <span class="media-play-badge" aria-hidden="true">▶</span>
+        </div>
+        ${bubbleMetaHtml(direction)}`;
+      wireFilePreview(div, { ...m, previewKind: 'video' });
+    } else if (m.kind === 'pdf') {
+      div.classList.add('pdf', 'file');
+      div.innerHTML = `
+        ${senderHeader}
+        <div class="file-row media-preview" role="button" tabindex="0">
+          <div class="file-icon pdf-icon">PDF</div>
+          <div class="file-meta">
+            <div class="file-name">${escapeHtml(m.name || 'Document.pdf')}</div>
+            <div class="file-size">${formatBytes(m.size || 0)} · Tap to preview</div>
+          </div>
+        </div>
+        ${bubbleMetaHtml(direction)}`;
+      wireFilePreview(div, { ...m, previewKind: 'pdf' });
     } else if (m.kind === 'sticker') {
       div.classList.add('sticker');
       div.innerHTML = `${senderHeader}<div class="sticker-emoji">${escapeHtml(m.sticker)}</div>${bubbleMetaHtml(direction)}`;
@@ -1298,18 +1573,18 @@
       div.classList.add('image');
       div.innerHTML = `
         ${senderHeader}
-        <img src="${m.url}" alt="${escapeHtml(m.name || 'image')}" />
+        <div class="media-preview" role="button" tabindex="0" aria-label="Open image">
+          <img src="${m.url}" alt="${escapeHtml(m.name || 'image')}" loading="lazy" />
+        </div>
         ${bubbleMetaHtml(direction)}`;
-      const img = div.querySelector('img');
-      img.addEventListener('click', () => window.open(m.url, '_blank'));
+      wireFilePreview(div, { ...m, previewKind: 'image' });
     } else if (m.kind === 'file') {
       div.classList.add('file');
+      const label = fileTypeLabel(m.mime, m.name);
       div.innerHTML = `
         ${senderHeader}
         <div class="file-row">
-          <div class="file-icon">
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM6 4h7v5h5v11H6z"/></svg>
-          </div>
+          <div class="file-icon file-type-badge">${escapeHtml(label.slice(0, 4))}</div>
           <div class="file-meta">
             <div class="file-name">${escapeHtml(m.name || 'file')}</div>
             <div class="file-size">${formatBytes(m.size || 0)}</div>
@@ -1318,6 +1593,9 @@
             <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3v12l4-4 1.4 1.4L12 17.8 6.6 12.4 8 11l4 4V3zM5 19h14v2H5z"/></svg>
           </a>
         </div>`;
+      if (mediaKindFromMime(m.mime, m.name) !== 'file') {
+        wireFilePreview(div, m);
+      }
     } else if (m.kind === 'file-uploading') {
       div.classList.add('file');
       div.dataset.uploadId = m.id;
@@ -1756,7 +2034,9 @@
     try {
       await Promise.all([connectSignaling(), loadIceConfig()]);
       state.ws.send(JSON.stringify({ type: 'join', room: code, mode: selectedMode }));
+      state.inChat = true;
       showScreen('chat-screen');
+      if (Notification.permission === 'granted') initPushSubscription();
       $('peer-avatar').textContent = code.charAt(0);
       $('peer-avatar').style.backgroundImage = '';
       document.querySelector('.peer-name').textContent =
@@ -1800,11 +2080,35 @@
     cleanupAndReturn();
   });
 
+  $('reconnect-btn')?.addEventListener('click', () => reconnectSession());
+  $('preview-close')?.addEventListener('click', closeFilePreview);
+  $('preview-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'preview-overlay') closeFilePreview();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeFilePreview();
+  });
+  $('notify-btn')?.addEventListener('click', () => enableNotifications());
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      if (ev.data && ev.data.type === 'open-room' && ev.data.room) {
+        location.hash = ev.data.room;
+        if (!state.inChat) $('room-input').value = ev.data.room;
+      }
+    });
+  }
+
   function cleanupAndReturn() {
+    state.inChat = false;
+    state.pushEnabled = false;
     sendTyping(false);
     if (anyPeerReady()) dcBroadcastPlain({ t: 'presence', on: false });
     messageReactions.clear();
-    try { state.ws && state.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
+    try {
+      if (wsConnected()) state.ws.send(JSON.stringify({ type: 'push-unsub' }));
+      state.ws.send(JSON.stringify({ type: 'leave' }));
+    } catch {}
     try { state.ws && state.ws.close(); } catch {}
     for (const peer of state.peers.values()) {
       try { peer.dc && peer.dc.close(); } catch {}
@@ -1822,7 +2126,9 @@
       myProfile: { name: '', av: null },
       callPeerId: null,
       iceServers: null, iceHasTurn: false, iceSource: '', forceRelay: false,
+      inChat: false, pushEnabled: false,
     });
+    updateReconnectBanner();
     $('messages').innerHTML = '';
     $('msg-input').value = '';
     $('name-input').value = '';

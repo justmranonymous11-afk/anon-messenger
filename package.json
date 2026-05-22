@@ -8,6 +8,9 @@
     "start": "node server.js",
     "dev": "node server.js"
   },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  },
   "engines": {
     "node": ">=18"
   }

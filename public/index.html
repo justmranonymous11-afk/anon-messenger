@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="referrer" content="no-referrer" />
   <title>Anon — Secure Messenger</title>
-  <link rel="stylesheet" href="styles.css?v=20260522b" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#00C2A8" />
+  <link rel="stylesheet" href="styles.css?v=20260523a" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
@@ -103,6 +105,9 @@
         </div>
       </div>
       <div class="header-actions">
+        <button id="notify-btn" class="icon-btn" title="Enable notifications" type="button">
+          <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6V11a7 7 0 0 0-5-6.71V4a2 2 0 1 0-4 0v.29A7 7 0 0 0 5 11v5l-2 2v1h18v-1z"/></svg>
+        </button>
         <button id="profile-btn" class="icon-btn" title="Edit your name & avatar (temporary)">
           <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
         </button>
@@ -118,6 +123,11 @@
     <div class="security-banner" id="security-banner">
       <span class="lock">🔒</span>
       <span>Verifying secure channel…</span>
+    </div>
+
+    <div id="reconnect-banner" class="reconnect-banner hidden">
+      <span id="reconnect-banner-text">Connection lost</span>
+      <button id="reconnect-btn" type="button" class="reconnect-btn">Reconnect</button>
     </div>
 
     <main id="messages" class="messages" aria-live="polite"></main>
@@ -201,6 +211,18 @@
     <button id="ctx-copy" type="button">Copy text</button>
   </div>
 
+  <!-- ============ FILE / MEDIA PREVIEW ============ -->
+  <div id="preview-overlay" class="preview-overlay hidden" role="dialog" aria-label="File preview">
+    <div class="preview-toolbar">
+      <span id="preview-name" class="preview-filename"></span>
+      <div class="preview-actions">
+        <a id="preview-download" class="preview-dl" href="#" download>Download</a>
+        <button id="preview-close" type="button" class="preview-close" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </div>
+
   <!-- ============ PROFILE DIALOG ============ -->
   <div id="profile-dialog" class="incoming hidden" role="dialog" aria-label="Edit profile">
     <div class="incoming-card profile-card">
@@ -227,6 +249,6 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260522b" type="module"></script>
+  <script src="app.js?v=20260523a" type="module"></script>
 </body>
 </html>
