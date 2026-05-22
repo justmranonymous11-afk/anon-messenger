@@ -396,7 +396,7 @@
   async function loadIceConfig() {
     if (state.iceServers) return state.iceServers;
     try {
-      const res = await fetch('/api/turn', { cache: 'no-store' });
+      const res = await fetch('/api/turn?refresh=1', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       state.iceServers = normalizeIceServers(body.iceServers);

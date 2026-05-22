@@ -38,20 +38,31 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 //   3) Public STUN fallback (P2P often fails across networks without TURN)
 //
 // Chat still works without TURN via encrypted WebSocket relay (see `relay` message).
-const METERED_SECRET_KEY = (
-  process.env.METERED_API_KEY
-  || process.env.METERED_SECRET_KEY
-  || process.env.METERED_SECRET
-  || ''
-).trim();
-// apiKey from an EXISTING credential in Metered dashboard (TURN Server → credential → apiKey).
-// Use this on Railway instead of creating new credentials via API (avoids 403 max-credentials).
-const METERED_TURN_API_KEY = (
-  process.env.METERED_TURN_API_KEY
-  || process.env.METERED_CREDENTIAL_API_KEY
-  || ''
-).trim();
-const TURN_CACHE_MS = 23 * 60 * 60 * 1000; // reuse credentials ~23h (Metered default expiry 24h)
+// Credential apiKey (40-char hex from TURN Server → credential). NOT the Developers Secret Key.
+function resolveMeteredCredentialApiKey() {
+  const explicit = (
+    process.env.METERED_TURN_API_KEY
+    || process.env.METERED_CREDENTIAL_API_KEY
+    || ''
+  ).trim();
+  if (explicit) return explicit;
+  // Common mistake: pasting credential apiKey into METERED_API_KEY on Railway.
+  const maybe = (process.env.METERED_API_KEY || '').trim();
+  if (/^[a-f0-9]{32,64}$/i.test(maybe)) return maybe;
+  return '';
+}
+
+// Secret Key from Developers tab — only for optional auto-create (usually skip; use apiKey instead).
+function resolveMeteredSecretKey() {
+  const s = (process.env.METERED_SECRET_KEY || process.env.METERED_SECRET || '').trim();
+  if (s) return s;
+  const maybe = (process.env.METERED_API_KEY || '').trim();
+  if (maybe && !/^[a-f0-9]{32,64}$/i.test(maybe)) return maybe;
+  return '';
+}
+
+const TURN_CACHE_MS = 23 * 60 * 60 * 1000; // successful TURN config
+const TURN_ERROR_CACHE_MS = 30 * 1000; // do not cache failures for 23h
 const MAX_RELAY_BYTES = 512 * 1024;
 let turnCache = { expires: 0, body: null };
 
@@ -197,10 +208,12 @@ async function fetchTurnFromMetered() {
     };
   }
 
-  // Best for Railway: paste apiKey from dashboard credential (no POST = no 403 quota).
-  if (METERED_TURN_API_KEY) {
+  const turnApiKey = resolveMeteredCredentialApiKey();
+  const secretKey = resolveMeteredSecretKey();
+
+  if (turnApiKey) {
     try {
-      const servers = await meteredFetchIceByApiKey(METERED_TURN_API_KEY);
+      const servers = await meteredFetchIceByApiKey(turnApiKey);
       return {
         servers,
         source: iceHasTurn(servers) ? 'metered-turn' : 'metered-stun-only',
@@ -208,29 +221,25 @@ async function fetchTurnFromMetered() {
       };
     } catch (e) {
       const msg = redactSecrets(e.message || e);
-      console.warn('[turn] METERED_TURN_API_KEY fetch failed:', msg);
-      return {
-        servers: [...STUN_FALLBACK],
-        source: 'error',
-        hint: msg.includes('401') || msg.includes('403')
-          ? 'Invalid METERED_TURN_API_KEY — copy apiKey from Metered → TURN Server → your credential'
-          : redactSecrets(msg).slice(0, 100),
-      };
+      console.warn('[turn] credential apiKey fetch failed:', msg);
+      // Fall through to username/password or secret POST if configured.
     }
   }
 
-  if (!METERED_SECRET_KEY) {
+  if (!secretKey) {
     return {
       servers: [...STUN_FALLBACK],
       source: 'stun-only',
-      hint: 'Set METERED_TURN_API_KEY (credential apiKey) OR METERED_API_KEY (Secret Key)',
+      hint: turnApiKey
+        ? 'TURN apiKey set but fetch failed — add METERED_TURN_USERNAME + METERED_TURN_PASSWORD from same credential'
+        : 'Set METERED_TURN_API_KEY (credential apiKey) on Railway — not the Secret Key',
     };
   }
 
   try {
     const created = await meteredRequest(
       'POST',
-      `/api/v1/turn/credential?secretKey=${encodeURIComponent(METERED_SECRET_KEY)}`,
+      `/api/v1/turn/credential?secretKey=${encodeURIComponent(secretKey)}`,
       { expiryInSeconds: 86400, label: 'anon-messenger' },
     );
     const apiKey = created && (created.apiKey || created.api_key);
@@ -265,9 +274,9 @@ async function fetchTurnFromMetered() {
   }
 }
 
-async function getIceServers() {
+async function getIceServers(forceRefresh = false) {
   const now = Date.now();
-  if (turnCache.body && now < turnCache.expires) return turnCache.body;
+  if (!forceRefresh && turnCache.body && now < turnCache.expires) return turnCache.body;
 
   const fromJson = iceServersFromEnvJson();
   if (fromJson) {
@@ -281,7 +290,8 @@ async function getIceServers() {
   }
 
   const body = await fetchTurnFromMetered();
-  turnCache = { expires: now + TURN_CACHE_MS, body };
+  const ok = body.source === 'metered-turn' || iceHasTurn(body.servers);
+  turnCache = { expires: now + (ok ? TURN_CACHE_MS : TURN_ERROR_CACHE_MS), body };
   return body;
 }
 
@@ -303,7 +313,9 @@ const httpServer = http.createServer(async (req, res) => {
     const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
 
     if (urlPath === '/api/turn') {
-      const cfg = await getIceServers();
+      const force = (req.url || '').includes('refresh=1');
+      const cfg = await getIceServers(force);
+      const turnApiKey = resolveMeteredCredentialApiKey();
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -318,9 +330,10 @@ const httpServer = http.createServer(async (req, res) => {
         meteredHost: meteredHost() || null,
         config: {
           subdomain: !!meteredHost(),
-          secretKey: !!METERED_SECRET_KEY,
-          turnApiKey: !!METERED_TURN_API_KEY,
+          turnApiKey: !!turnApiKey,
+          secretKey: !!resolveMeteredSecretKey(),
           staticUser: !!(process.env.METERED_TURN_USERNAME && process.env.METERED_TURN_PASSWORD),
+          apiKeyInWrongVar: !!(process.env.METERED_API_KEY && /^[a-f0-9]{32,64}$/i.test(process.env.METERED_API_KEY.trim()) && !process.env.METERED_TURN_API_KEY),
         },
       }));
       return;
@@ -687,7 +700,7 @@ httpServer.listen(PORT, () => {
   console.log(`
   Anonymous Messenger running:
     Local:   http://localhost:${PORT}
-    TURN:    ${host ? host : '(not configured)'} secret=${METERED_SECRET_KEY ? 'yes' : 'no'} turnApiKey=${METERED_TURN_API_KEY ? 'yes' : 'no'}
+    TURN:    ${host ? host : '(not configured)'} turnApiKey=${resolveMeteredCredentialApiKey() ? 'yes' : 'no'} secret=${resolveMeteredSecretKey() ? 'yes' : 'no'} staticUser=${(process.env.METERED_TURN_USERNAME && process.env.METERED_TURN_PASSWORD) ? 'yes' : 'no'}
     Relay:   encrypted chat fallback enabled (no TURN required for text)
 
   Open the URL in two browser windows / devices, use the same room
