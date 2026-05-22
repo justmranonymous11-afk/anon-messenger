@@ -7,18 +7,13 @@
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#00C2A8" />
-  <link rel="stylesheet" href="styles.css?v=20260523b" />
+  <link rel="stylesheet" href="styles.css?v=20260524a" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
 <body>
   <!-- ============ JOIN SCREEN ============ -->
   <section id="join-screen" class="screen active">
-    <div class="join-bg" aria-hidden="true">
-      <div class="jb-orb jb-orb-1"></div>
-      <div class="jb-orb jb-orb-2"></div>
-      <div class="jb-orb jb-orb-3"></div>
-    </div>
     <div class="join-card">
       <div class="logo">
         <!-- Hexagonal shield with a key emblem — original design, no resemblance to Telegram. -->
@@ -88,15 +83,15 @@
         Enter room
       </button>
 
-      <div class="security-note">
-        <strong>How it's secured</strong>
+      <details class="security-note">
+        <summary>How it's secured</summary>
         <ul>
           <li>Peer-to-peer — the server only introduces you, then steps aside.</li>
           <li>Messages: <code>ECDH P-256 → AES-GCM 256</code> on top of the encrypted WebRTC channel.</li>
           <li>Calls: WebRTC <code>DTLS-SRTP</code> (same crypto family used by major secure messengers).</li>
           <li>Nothing stored on the server. Messages live only in your browser memory.</li>
         </ul>
-      </div>
+      </details>
     </div><!-- .join-card -->
   </section>
 
@@ -259,6 +254,6 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260523b" type="module"></script>
+  <script src="app.js?v=20260524a" type="module"></script>
 </body>
 </html>
