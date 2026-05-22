@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="referrer" content="no-referrer" />
   <title>Anon — Secure Messenger</title>
-  <link rel="stylesheet" href="styles.css?v=20260521l" />
+  <link rel="stylesheet" href="styles.css?v=20260522b" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
@@ -195,8 +195,9 @@
 
   <!-- ============ MESSAGE CONTEXT MENU ============ -->
   <div id="ctx-menu" class="ctx-menu hidden">
+    <div id="ctx-react-row" class="ctx-react-row"></div>
     <button id="ctx-delete-me" type="button">Delete for me</button>
-    <button id="ctx-delete-all" type="button">Delete for both</button>
+    <button id="ctx-delete-all" type="button">Delete for everyone</button>
     <button id="ctx-copy" type="button">Copy text</button>
   </div>
 
@@ -226,6 +227,6 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260522a" type="module"></script>
+  <script src="app.js?v=20260522b" type="module"></script>
 </body>
 </html>

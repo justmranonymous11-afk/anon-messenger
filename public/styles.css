@@ -182,6 +182,7 @@ button { font-family: inherit; cursor: pointer; }
 .peer-name { font-weight: 500; font-size: 15px; }
 .peer-status { font-size: 12px; color: var(--text-dim); }
 .peer-status.online { color: var(--success); }
+.peer-status.typing { color: var(--accent-3); font-style: italic; }
 
 .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
@@ -337,6 +338,42 @@ button { font-family: inherit; cursor: pointer; }
   align-items: center;
   gap: 10px;
 }
+.bubble-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  float: right;
+  margin-left: 8px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: rgba(255,255,255,0.5);
+  vertical-align: bottom;
+}
+.bubble-meta .time { float: none; margin: 0; }
+.read-ticks {
+  font-size: 11px;
+  letter-spacing: -2px;
+  color: rgba(255,255,255,0.45);
+}
+.read-ticks.read { color: var(--accent-3); }
+.reactions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  clear: both;
+}
+.reaction-chip {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: var(--bg-3);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.reaction-chip:hover { background: #2C3A4B; }
 .bubble .time {
   font-size: 10.5px; color: rgba(255,255,255,0.5);
   margin-left: 8px; float: right;
@@ -351,6 +388,7 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 12px;
 }
 .bubble.deleted {
+  opacity: 0.85;
   font-style: italic;
   color: var(--text-dim);
   background: transparent !important;
@@ -673,6 +711,26 @@ button { font-family: inherit; cursor: pointer; }
 }
 .ctx-menu button:hover { background: var(--bg-3); }
 .ctx-menu button.danger { color: var(--danger); }
+.ctx-react-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 4px 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 2px;
+}
+.ctx-react-row .ctx-react {
+  flex: 1;
+  min-width: 36px;
+  text-align: center;
+  padding: 6px 4px;
+  font-size: 18px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ctx-react-row .ctx-react:hover { background: var(--bg-3); }
 
 /* ============ Call overlay ============ */
 .call-overlay {

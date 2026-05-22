@@ -12,7 +12,10 @@
  *
  * In-band protocol (after AES-GCM unwrap, all messages are JSON):
  *   {t:'msg',      id, p:{iv,ct}}           encrypted text message
- *   {t:'msg-del',  id}                      delete a message by id (for both)
+ *   {t:'msg-del',  id}                      delete a message for everyone
+ *   {t:'typing',  on: bool}                typing indicator
+ *   {t:'read',    id}                      read receipt for message id
+ *   {t:'react',   id, emoji, on: bool}      add/remove reaction on message
  *   {t:'sticker',  id, s}                   sticker (emoji string)
  *   {t:'audio',    id, dur, mime, p:{iv,ct}} encrypted audio blob (small)
  *   {t:'blob-meta', id, kind, name?, mime, total, dur?}   start of multi-chunk transfer
@@ -112,8 +115,14 @@
       weInitiate: false,
       iceRetried: false,
       useRelay: false,
+      online: false,
+      typingUntil: 0,
     };
   }
+
+  const REACTIONS = ['❤️', '👍', '😂', '😮', '😢', '🙏'];
+  const typingState = { active: false, stopTimer: null, lastSent: 0 };
+  const messageReactions = new Map(); // msgId -> Map emoji -> Set(peerId)
 
   function peerCount() { return state.peers.size; }
   function isGroup() { return peerCount() >= 2; }
@@ -498,14 +507,17 @@
       const st = peer.pc.connectionState;
       console.log(`[pc:${peerId}] connectionState=${st}`);
       if (st === 'connected') {
-        setStatus('online', true);
+        peer.online = true;
         enableChatIfReady();
       } else if (st === 'failed' && !peer.useRelay && !state.forceRelay) {
+        peer.online = false;
         setStatus('p2p failed', false);
       } else if (st === 'disconnected') {
+        peer.online = false;
         setStatus('reconnecting…', false);
       }
       updateHeaderForPeers();
+      updatePresenceUI();
     };
     peer.pc.oniceconnectionstatechange = async () => {
       const iceSt = peer.pc.iceConnectionState;
@@ -593,11 +605,13 @@
     if (peer.useRelay) return;
     peer.useRelay = true;
     console.log(`[relay] active for peer ${peer.id}`);
-    setStatus('online (relay)', true);
+    peer.online = true;
     setBanner('🔒 Encrypted via server relay (ciphertext only). Configure TURN for direct P2P + calls.', 'ok');
     enableChatIfReady();
     showSystemMessage('Secure channel ready (relay) — you can chat.');
     sendMyProfileTo(peer);
+    dcSendTo(peer, { t: 'presence', on: true });
+    updatePresenceUI();
   }
 
   async function onPeerPublicKey(peer, b64) {
@@ -624,11 +638,18 @@
     dc.bufferedAmountLowThreshold = 64 * 1024;
     dc.onopen = () => {
       console.log(`[dc:${peer.id}] open`);
+      peer.online = true;
       enableChatIfReady();
       showSystemMessage('Secure channel ready — you can chat.');
       sendMyProfileTo(peer);
+      dcSendTo(peer, { t: 'presence', on: true });
+      updatePresenceUI();
     };
-    dc.onclose = () => { updateHeaderForPeers(); };
+    dc.onclose = () => {
+      peer.online = false;
+      peer.typingUntil = 0;
+      updateHeaderForPeers();
+    };
     dc.onmessage = (ev) => onDcMessage(peer, ev.data);
   }
 
@@ -668,6 +689,22 @@
         }
         case 'msg-del':
           markMessageDeleted(msg.id);
+          messageReactions.delete(msg.id);
+          return;
+        case 'typing':
+          peer.typingUntil = msg.on ? Date.now() + 3500 : 0;
+          updatePresenceUI();
+          return;
+        case 'presence':
+          peer.online = !!msg.on;
+          if (!msg.on) peer.typingUntil = 0;
+          updatePresenceUI();
+          return;
+        case 'read':
+          markOutgoingRead(msg.id);
+          return;
+        case 'react':
+          if (msg.emoji && msg.id) setReaction(msg.id, msg.emoji, peer.id, !!msg.on);
           return;
         case 'blob-meta':
           peer.incomingBlobs.set(msg.id, {
@@ -782,7 +819,7 @@
     }
     if (ready) {
       $('msg-input').focus();
-      setStatus('online', true);
+      updatePresenceUI();
       updateSecurityBanner();
     }
   }
@@ -986,6 +1023,7 @@
       avEl.style.backgroundImage = '';
       avEl.textContent = String(count + 1); // including you
     }
+    updatePresenceUI();
   }
 
   // Update the profile button to visually represent YOU (your name/avatar).
@@ -1060,8 +1098,141 @@
   }
   function setStatus(text, online) {
     const el = $('peer-status');
+    if (!el) return;
     el.textContent = text;
     el.classList.toggle('online', !!online);
+    el.classList.toggle('typing', /typing/i.test(text));
+  }
+
+  function peerAppearsOnline(p) {
+    return p.online || peerTransportReady(p);
+  }
+
+  function updatePresenceUI() {
+    const now = Date.now();
+    const typingPeers = [];
+    let onlineCount = 0;
+    for (const p of state.peers.values()) {
+      if (p.typingUntil > now) typingPeers.push(p);
+      else if (peerAppearsOnline(p)) onlineCount++;
+    }
+    if (peerCount() === 0) {
+      setStatus('waiting', false);
+      return;
+    }
+    if (typingPeers.length > 0) {
+      if (peerCount() === 1) {
+        const name = (typingPeers[0].profile.name || '').trim() || 'Peer';
+        setStatus(`${name} is typing…`, true);
+      } else {
+        setStatus(`${typingPeers.length} typing…`, true);
+      }
+      return;
+    }
+    if (peerCount() === 1) {
+      const p = state.peers.values().next().value;
+      const on = peerAppearsOnline(p);
+      setStatus(on ? 'online' : 'offline', on);
+      return;
+    }
+    setStatus(`${onlineCount}/${peerCount()} online`, onlineCount > 0);
+  }
+
+  function broadcastPresence(online) {
+    dcBroadcastPlain({ t: 'presence', on: !!online });
+    for (const p of state.peers.values()) p.online = !!online;
+    updatePresenceUI();
+  }
+
+  function sendTyping(on) {
+    const now = Date.now();
+    if (on) {
+      if (typingState.active && now - typingState.lastSent < 400) return;
+      typingState.active = true;
+      typingState.lastSent = now;
+      dcBroadcastPlain({ t: 'typing', on: true });
+    } else {
+      if (!typingState.active) return;
+      typingState.active = false;
+      typingState.lastSent = now;
+      dcBroadcastPlain({ t: 'typing', on: false });
+    }
+  }
+
+  function scheduleTypingStop() {
+    clearTimeout(typingState.stopTimer);
+    typingState.stopTimer = setTimeout(() => sendTyping(false), 2000);
+  }
+
+  function sendReadReceipt(msgId) {
+    if (!msgId) return;
+    dcBroadcastPlain({ t: 'read', id: msgId });
+  }
+
+  function markOutgoingRead(msgId) {
+    const el = document.querySelector(`.bubble.out[data-id="${CSS.escape(msgId)}"]`);
+    if (!el || el.classList.contains('deleted')) return;
+    const ticks = el.querySelector('.read-ticks');
+    if (ticks) {
+      ticks.textContent = '✓✓';
+      ticks.classList.add('read');
+      ticks.title = 'Read';
+    }
+  }
+
+  function getReactionsMap(msgId) {
+    if (!messageReactions.has(msgId)) messageReactions.set(msgId, new Map());
+    return messageReactions.get(msgId);
+  }
+
+  function setReaction(msgId, emoji, peerId, add) {
+    const map = getReactionsMap(msgId);
+    if (!map.has(emoji)) map.set(emoji, new Set());
+    const set = map.get(emoji);
+    if (add) set.add(peerId); else set.delete(peerId);
+    if (set.size === 0) map.delete(emoji);
+    if (map.size === 0) messageReactions.delete(msgId);
+    refreshReactionsUI(msgId);
+  }
+
+  function refreshReactionsUI(msgId) {
+    const el = document.querySelector(`.bubble[data-id="${CSS.escape(msgId)}"]`);
+    if (!el || el.classList.contains('deleted')) return;
+    let bar = el.querySelector('.reactions-bar');
+    const map = messageReactions.get(msgId);
+    if (!map || map.size === 0) {
+      if (bar) bar.remove();
+      return;
+    }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'reactions-bar';
+      el.appendChild(bar);
+    }
+    bar.innerHTML = '';
+    for (const [emoji, peers] of map) {
+      if (!peers.size) continue;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'reaction-chip';
+      chip.textContent = `${emoji} ${peers.size > 1 && isGroup() ? peers.size : ''}`.trim();
+      chip.title = 'Toggle reaction';
+      chip.addEventListener('click', () => toggleReaction(msgId, emoji));
+      bar.appendChild(chip);
+    }
+  }
+
+  function toggleReaction(msgId, emoji) {
+    const map = getReactionsMap(msgId);
+    const mine = map.get(emoji)?.has(state.myId);
+    const add = !mine;
+    setReaction(msgId, emoji, state.myId, add);
+    dcBroadcastPlain({ t: 'react', id: msgId, emoji, on: add });
+  }
+
+  function queueReadReceipt(msgId) {
+    if (!msgId || document.hidden) return;
+    sendReadReceipt(msgId);
   }
   function setBanner(text, kind = 'info') {
     const b = $('security-banner');
@@ -1080,6 +1251,14 @@
       '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#22E5C4;">$1</a>');
   }
 
+  function bubbleMetaHtml(direction) {
+    const time = `<span class="time">${nowTime()}</span>`;
+    if (direction === 'out') {
+      return `<span class="bubble-meta"><span class="read-ticks" title="Sent">✓</span>${time}</span>`;
+    }
+    return time;
+  }
+
   // Render a message bubble. `m` = { id, kind, text?, sticker?, audioUrl?, duration? }
   function renderMessage(m, direction) {
     const wrap = $('messages');
@@ -1095,10 +1274,10 @@
     }
     if (m.kind === 'text') {
       div.dataset.text = m.text;
-      div.innerHTML = `${senderHeader}${linkify(escapeHtml(m.text))}<span class="time">${nowTime()}</span>`;
+      div.innerHTML = `${senderHeader}${linkify(escapeHtml(m.text))}${bubbleMetaHtml(direction)}`;
     } else if (m.kind === 'sticker') {
       div.classList.add('sticker');
-      div.innerHTML = `${senderHeader}<div class="sticker-emoji">${escapeHtml(m.sticker)}</div><span class="time">${nowTime()}</span>`;
+      div.innerHTML = `${senderHeader}<div class="sticker-emoji">${escapeHtml(m.sticker)}</div>${bubbleMetaHtml(direction)}`;
     } else if (m.kind === 'audio') {
       div.classList.add('audio');
       const waveBars = Array.from({ length: 22 }, () => '<span></span>').join('');
@@ -1112,7 +1291,7 @@
             <div class="audio-waves">${waveBars}</div>
             <div class="audio-duration">${formatDuration(m.duration || 0)}</div>
           </div>
-          <span class="time">${nowTime()}</span>
+          ${bubbleMetaHtml(direction)}
         </div>`;
       wireAudioBubble(div, m.audioUrl, m.duration);
     } else if (m.kind === 'image') {
@@ -1120,7 +1299,7 @@
       div.innerHTML = `
         ${senderHeader}
         <img src="${m.url}" alt="${escapeHtml(m.name || 'image')}" />
-        <span class="time">${nowTime()}</span>`;
+        ${bubbleMetaHtml(direction)}`;
       const img = div.querySelector('img');
       img.addEventListener('click', () => window.open(m.url, '_blank'));
     } else if (m.kind === 'file') {
@@ -1158,6 +1337,7 @@
     attachContextMenu(div, direction);
     wrap.appendChild(div);
     wrap.scrollTop = wrap.scrollHeight;
+    if (direction === 'in' && m.id) queueReadReceipt(m.id);
   }
 
   function formatDuration(s) {
@@ -1220,9 +1400,10 @@
   function markMessageDeleted(id) {
     const el = document.querySelector(`.bubble[data-id="${CSS.escape(id)}"]`);
     if (!el) return;
-    el.classList.remove('sticker','audio');
+    messageReactions.delete(id);
+    el.classList.remove('sticker','audio','image','file');
     el.classList.add('deleted');
-    el.innerHTML = `<span style="opacity:.7">message deleted</span><span class="time">${nowTime()}</span>`;
+    el.innerHTML = `<span style="opacity:.7">Message deleted</span><span class="time">${nowTime()}</span>`;
   }
 
   // ===========================================================
@@ -1233,11 +1414,16 @@
 
   function attachContextMenu(bubble, direction) {
     if (bubble.classList.contains('system')) return;
+    let lastTap = 0;
+    bubble.addEventListener('dblclick', () => {
+      if (bubble.classList.contains('deleted')) return;
+      toggleReaction(bubble.dataset.id, '❤️');
+    });
     bubble.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       openCtxMenu(bubble, e.clientX, e.clientY);
     });
-    // Long-press for touch devices
+    // Long-press for touch devices; double-tap to ❤️
     let pressTimer = null;
     bubble.addEventListener('touchstart', (e) => {
       pressTimer = setTimeout(() => {
@@ -1245,7 +1431,16 @@
         openCtxMenu(bubble, t.clientX, t.clientY);
       }, 500);
     }, { passive: true });
-    bubble.addEventListener('touchend', () => clearTimeout(pressTimer));
+    bubble.addEventListener('touchend', () => {
+      clearTimeout(pressTimer);
+      const now = Date.now();
+      if (now - lastTap < 320) {
+        if (!bubble.classList.contains('deleted')) toggleReaction(bubble.dataset.id, '❤️');
+        lastTap = 0;
+      } else {
+        lastTap = now;
+      }
+    });
     bubble.addEventListener('touchmove', () => clearTimeout(pressTimer));
   }
 
@@ -1253,8 +1448,13 @@
     ctxTargetEl = el;
     const mine = el.classList.contains('out');
     const isText = el.dataset.kind === 'text';
-    $('ctx-delete-all').style.display = mine ? '' : 'none';
+    const deleted = el.classList.contains('deleted');
+    $('ctx-delete-all').style.display = (mine && !deleted) ? '' : 'none';
+    $('ctx-delete-me').style.display = deleted ? 'none' : '';
     $('ctx-copy').style.display = isText ? '' : 'none';
+    $('ctx-react-row').style.display = deleted ? 'none' : '';
+    const delAll = $('ctx-delete-all');
+    if (delAll) delAll.textContent = isGroup() ? 'Delete for everyone' : 'Delete for both';
     ctxMenu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     ctxMenu.style.top = Math.min(y, window.innerHeight - 140) + 'px';
     ctxMenu.classList.remove('hidden');
@@ -1288,6 +1488,39 @@
     closeCtxMenu();
   });
 
+  const ctxReactRow = $('ctx-react-row');
+  if (ctxReactRow) {
+    REACTIONS.forEach(emoji => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ctx-react';
+      btn.textContent = emoji;
+      btn.addEventListener('click', () => {
+        if (!ctxTargetEl || ctxTargetEl.classList.contains('deleted')) return;
+        toggleReaction(ctxTargetEl.dataset.id, emoji);
+        closeCtxMenu();
+      });
+      ctxReactRow.appendChild(btn);
+    });
+  }
+
+  const msgInput = $('msg-input');
+  if (msgInput) {
+    msgInput.addEventListener('input', () => {
+      if (!anyPeerReady()) return;
+      sendTyping(true);
+      scheduleTypingStop();
+    });
+    msgInput.addEventListener('blur', () => sendTyping(false));
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      document.querySelectorAll('.bubble.in:not(.deleted)[data-id]').forEach(el => {
+        queueReadReceipt(el.dataset.id);
+      });
+    }
+  });
+
   // ===========================================================
   // Chat send
   // ===========================================================
@@ -1296,6 +1529,7 @@
     const input = $('msg-input');
     const text = input.value.trim();
     if (!text || !anyPeerReady()) return;
+    sendTyping(false);
     try {
       const id = randId();
       const sent = await dcBroadcastEncryptedText(text, { t: 'msg', id });
@@ -1567,6 +1801,9 @@
   });
 
   function cleanupAndReturn() {
+    sendTyping(false);
+    if (anyPeerReady()) dcBroadcastPlain({ t: 'presence', on: false });
+    messageReactions.clear();
     try { state.ws && state.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
     try { state.ws && state.ws.close(); } catch {}
     for (const peer of state.peers.values()) {
