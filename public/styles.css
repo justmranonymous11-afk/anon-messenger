@@ -66,13 +66,24 @@ button { font-family: inherit; cursor: pointer; border: none; }
   position: relative;
 }
 
-/* Subtle dot star-field (position: absolute, never blocks scroll) */
+/* Aurora — slow shifting gradient gives a living background */
 #join-screen::before {
   content: '';
   position: absolute; inset: 0;
   pointer-events: none; z-index: 0;
-  background-image: radial-gradient(circle, rgba(255,255,255,0.028) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background: linear-gradient(-45deg,
+    rgba(0,194,168,0.08)  0%,
+    rgba(0,50,90,0.05)    25%,
+    rgba(34,229,196,0.07) 50%,
+    rgba(0,30,70,0.04)    75%,
+    rgba(0,194,168,0.08)  100%
+  );
+  background-size: 400% 400%;
+  animation: aurora 22s ease infinite;
+}
+@keyframes aurora {
+  0%, 100% { background-position: 0%   50%; }
+  50%       { background-position: 100% 50%; }
 }
 
 /* Animated glow pulse behind card */
@@ -95,7 +106,7 @@ button { font-family: inherit; cursor: pointer; border: none; }
 .join-card {
   position: relative; z-index: 1;
   width: 100%; max-width: 440px;
-  margin: auto;                       /* centres vertically when content < viewport */
+  margin: auto;
   background: rgba(10, 20, 33, 0.82);
   backdrop-filter: blur(32px) saturate(1.5);
   -webkit-backdrop-filter: blur(32px) saturate(1.5);
@@ -107,6 +118,7 @@ button { font-family: inherit; cursor: pointer; border: none; }
     inset 0 1px 0 rgba(255,255,255,0.07);
   text-align: center;
   animation: rise .38s cubic-bezier(.2,.9,.3,1);
+  overflow: hidden;                   /* clips shimmer and rounds inner elements */
 }
 
 /* Top accent line */
@@ -115,6 +127,24 @@ button { font-family: inherit; cursor: pointer; border: none; }
   position: absolute; top: 0; left: 18%; right: 18%;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgba(0,194,168,0.6), transparent);
+  z-index: 3;
+}
+/* One-shot shimmer sweep on load */
+.join-card::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    108deg,
+    transparent          30%,
+    rgba(255,255,255,0.055) 50%,
+    transparent          70%
+  );
+  animation: card-shimmer .95s ease-out .55s both;
+  pointer-events: none; z-index: 2;
+}
+@keyframes card-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 /* Logo levitate */
@@ -147,11 +177,31 @@ button { font-family: inherit; cursor: pointer; border: none; }
   flex-wrap: wrap; margin-bottom: 24px;
 }
 .join-pill {
+  display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; font-weight: 500;
   padding: 4px 10px; border-radius: 999px;
   background: rgba(0,194,168,0.08);
   border: 1px solid rgba(0,194,168,0.2);
   color: var(--accent-3); letter-spacing: 0.1px;
+}
+.pill-icon { flex-shrink: 0; display: block; }
+
+/* Pill lock — shackle drops into place */
+.pil-shk {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: pil-shk 0.5s cubic-bezier(.2,.9,.3,1) 0.9s both;
+}
+@keyframes pil-shk {
+  0%   { transform: translateY(-2.5px); }
+  65%  { transform: translateY(0.5px);  }
+  100% { transform: translateY(0);      }
+}
+/* Pill slashes — staggered draw-in */
+.join-pill:nth-child(2) .pil-sla { animation: pil-sla 0.4s ease-out 1.15s both; }
+.join-pill:nth-child(3) .pil-sla { animation: pil-sla 0.4s ease-out 1.5s  both; }
+@keyframes pil-sla {
+  to { stroke-dashoffset: 0; }
 }
 
 /* ============ Fields ============ */
@@ -215,7 +265,17 @@ input[type="text"]::placeholder { color: var(--text-dim); }
   transition: filter .15s, transform .08s, box-shadow .15s;
   letter-spacing: 0.15px;
   -webkit-tap-highlight-color: transparent;
+  position: relative; overflow: hidden;
 }
+/* Shine sweep on hover */
+.primary::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.16) 50%, transparent 70%);
+  transform: translateX(-100%);
+  transition: transform .55s;
+}
+.primary:not(:disabled):hover::after { transform: translateX(100%); }
 .primary:hover  { filter: brightness(1.08); box-shadow: 0 10px 28px rgba(0,194,168,0.52), inset 0 1px 0 rgba(255,255,255,0.2); }
 .primary:active { transform: scale(0.985); }
 .primary:disabled {
@@ -243,9 +303,10 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 .mode-opt.active {
   border-color: var(--accent-3);
   background: rgba(0,194,168,0.09);
-  box-shadow: inset 0 0 0 1px rgba(0,194,168,0.1);
+  box-shadow: inset 3px 0 0 var(--accent-3), inset 0 0 0 1px rgba(0,194,168,0.1);
 }
 .mode-opt.active span { color: #fff; }
+.mode-opt.active svg  { color: var(--accent-3); }
 
 /* ============ Mode tag in chat header ============ */
 .peer-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
