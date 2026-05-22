@@ -650,8 +650,13 @@ function pruneDeadPeers(room) {
   }
 }
 
-function notifyReady1on1(room) {
-  if (room.mode !== '1on1' || room.peers.size !== 2) return;
+function notifyRoomReady(room) {
+  const n = room.peers.size;
+  if (room.mode === '1on1') {
+    if (n !== 2) return;
+  } else if (n < 2) {
+    return;
+  }
   const ids = Array.from(room.peers.keys());
   for (const peer of room.peers.values()) {
     safeSend(peer, { type: 'ready', peers: ids });
@@ -676,6 +681,8 @@ function handleConnection(ws) {
           safeSend(ws, { type: 'error', error: 'Invalid room code' }); return;
         }
         const requestedMode = (msg.mode === 'group' || msg.mode === '1on1') ? msg.mode : '1on1';
+        // Re-join on same socket without leave left a ghost id in the room.
+        if (ws._peerId) leave(ws);
         let room = rooms.get(roomId);
         if (!room) {
           // First joiner sets the room mode.
@@ -683,6 +690,15 @@ function handleConnection(ws) {
           rooms.set(roomId, room);
         }
         pruneDeadPeers(room);
+        if (room.peers.size > 0 && requestedMode !== room.mode) {
+          safeSend(ws, {
+            type: 'error',
+            error: room.mode === 'group'
+              ? 'This room is already a group — pick Group on the home screen, or use a new code.'
+              : 'This room is 1-on-1 only — pick "Just us", or use a new code for a group.',
+          });
+          return;
+        }
         const cap = CAPS[room.mode] || 2;
         if (room.peers.size >= cap) {
           safeSend(ws, {
@@ -710,7 +726,7 @@ function handleConnection(ws) {
           if (id === myId) continue;
           safeSend(peer, { type: 'peer-joined', id: myId });
         }
-        notifyReady1on1(room);
+        notifyRoomReady(room);
         return;
       }
 

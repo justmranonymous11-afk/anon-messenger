@@ -128,7 +128,7 @@
   const messageReactions = new Map(); // msgId -> Map emoji -> Set(peerId)
 
   function peerCount() { return state.peers.size; }
-  function isGroup() { return peerCount() >= 2; }
+  function isGroup() { return state.roomMode === 'group'; }
   function getPeer(id) { return state.peers.get(id); }
 
   // Send chunks small enough to comfortably fit a DataChannel message
@@ -283,12 +283,10 @@
         } else {
           showSystemMessage(`Connecting to ${existing.length} peer${existing.length>1?'s':''}…`);
           setStatus('connecting…', false);
-          for (const peerId of existing) {
-            // Symmetric initiator role: the lex-smaller id is impolite (initiates).
-            // Both sides compute the same answer, so exactly one peer creates the DC.
+          await Promise.all(existing.map(async (peerId) => {
             const weInitiate = state.myId < peerId;
             await ensurePeerConnection(peerId, weInitiate);
-          }
+          }));
         }
         updateHeaderForPeers();
         joinedReady = true;
@@ -309,14 +307,15 @@
       }
 
       case 'ready': {
-        // 1-on-1 sync: both peers are in the room — (re)connect if needed.
-        if (state.roomMode !== '1on1') break;
+        // Mesh sync when the room is full enough — (re)connect any missing links.
         const others = Array.isArray(msg.peers) ? msg.peers : [];
-        for (const peerId of others) {
-          if (peerId === state.myId) continue;
+        await Promise.all(others.map(async (peerId) => {
+          if (peerId === state.myId) return;
+          const peer = getPeer(peerId);
+          if (peer && peerTransportReady(peer)) return;
           const weInitiate = state.myId < peerId;
           await ensurePeerConnection(peerId, weInitiate);
-        }
+        }));
         break;
       }
 
@@ -386,7 +385,10 @@
       }
 
       case 'error':
-        toast(msg.error);
+        toast(msg.error || 'Error');
+        if (!state.myId && state.inChat) {
+          cleanupAndReturn();
+        }
         break;
     }
   }
@@ -895,6 +897,8 @@
       if (!wsConnected()) {
         try { state.ws && state.ws.close(); } catch {}
         await connectSignaling();
+      } else {
+        try { state.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
       }
       if (!state.myKeyPair) state.myKeyPair = await generateKeyPair();
       state.ws.send(JSON.stringify({
@@ -1520,7 +1524,7 @@
     div.dataset.kind = m.kind;
     // Sender label for group-mode incoming messages.
     let senderHeader = '';
-    if (direction === 'in' && isGroup() && m.from) {
+    if (direction === 'in' && isGroup() && peerCount() >= 1 && m.from) {
       const name = (m.from.profile.name || '').trim() || 'Anonymous';
       senderHeader = `<div class="sender">${escapeHtml(name)}</div>`;
     }
