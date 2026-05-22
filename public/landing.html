@@ -16,7 +16,7 @@
   <meta name="twitter:title"      content="Anon — Private Messenger" />
   <meta name="twitter:description" content="E2E encrypted chat & calls. No accounts. No logs." />
 
-  <link rel="stylesheet" href="landing.css?v=20260526a" />
+  <link rel="stylesheet" href="landing.css?v=20260526b" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
 <body>
@@ -163,8 +163,7 @@
           <path d="M4 10h12M11 4l6 6-6 6"/>
         </svg>
       </a>
-      <!-- Update href to your GitHub repo URL -->
-      <a href="#" class="cta-ghost" target="_blank" rel="noopener noreferrer">
+      <a href="https://github.com/5D-group/anon-messenger" class="cta-ghost" target="_blank" rel="noopener noreferrer">
         <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor" aria-hidden="true">
           <path fill-rule="evenodd" d="M10 0C4.477 0 0 4.477 0 10c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.604-3.369-1.341-3.369-1.341-.454-1.155-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 10 4.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C17.137 18.163 20 14.418 20 10 20 4.477 15.523 0 10 0z" clip-rule="evenodd"/>
         </svg>
@@ -288,21 +287,124 @@
         </details>
 
         <details class="faq-item">
-          <summary>What does ANON <em>not</em> protect against?</summary>
+          <summary><span>What doesn't ANON protect against?</span></summary>
           <div class="faq-body">
-            ANON protects against server-side surveillance and data breaches. It does not protect against: screenshots by the other person, malware already running on either device, or someone physically looking at your screen. Always consider your full threat model.
+            ANON is strong against server-side threats — but it does not protect against: screenshots by the other person, malware already running on your device, or someone physically looking at your screen. The full breakdown is in the <a href="#security" class="faq-link">Security model</a>.
           </div>
         </details>
 
         <details class="faq-item">
-          <summary>Is the source code available?</summary>
+          <summary><span>Does publishing the source code break the encryption?</span></summary>
           <div class="faq-body">
-            Yes. ANON is fully open source — the signaling server, the encryption layer, and the entire client are available for inspection.
-            <a href="#" class="faq-link" target="_blank" rel="noopener noreferrer">View on GitHub →</a>
+            No — and this is a crucial point. This is <strong>Kerckhoffs's principle</strong>: a secure system should remain secure even if everything about it except the key is public knowledge. ANON's protection comes from your ephemeral session keys (generated fresh each time, never stored), not from keeping the algorithm secret. Publishing the source code lets anyone verify there are no backdoors — which actually <em>strengthens</em> trust. The server seeing the code cannot derive your keys.
+          </div>
+        </details>
+
+        <details class="faq-item">
+          <summary><span>Is the source code available?</span></summary>
+          <div class="faq-body">
+            Yes — every line is public.
+            <a href="https://github.com/5D-group/anon-messenger" class="faq-link" target="_blank" rel="noopener noreferrer">View on GitHub →</a>
           </div>
         </details>
 
       </div><!-- /.faq-list -->
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SECURITY MODEL
+  ============================================================ -->
+  <section class="s-security" id="security">
+    <div class="sec-inner">
+      <div class="sec-label">VERIFIED BY DESIGN</div>
+      <h2 class="sec-heading">Security model</h2>
+
+      <p class="sec-intro">
+        ANON uses standard cryptographic primitives built into your browser's
+        <strong>Web Crypto API</strong> — the same engine used by banking apps and TLS. No custom crypto,
+        no proprietary algorithms, no third-party dependencies for encryption.
+      </p>
+
+      <!-- Crypto stack -->
+      <div class="crypto-stack">
+        <div class="crypto-step">
+          <div class="crypto-num">1</div>
+          <div class="crypto-body">
+            <div class="crypto-name">Key exchange — ECDH P-256</div>
+            <p class="crypto-desc">Each browser generates a fresh keypair on connect. Public keys are exchanged through the signaling server. The resulting shared secret never leaves your device and the server never sees it.</p>
+          </div>
+        </div>
+        <div class="crypto-arrow" aria-hidden="true">↓</div>
+        <div class="crypto-step">
+          <div class="crypto-num">2</div>
+          <div class="crypto-body">
+            <div class="crypto-name">Key derivation — HKDF / SHA-256</div>
+            <p class="crypto-desc">The shared secret is stretched into a 256-bit AES session key via HKDF. The key is marked <strong>non-extractable</strong> — it physically cannot be read out of the browser by any JavaScript, including this page.</p>
+          </div>
+        </div>
+        <div class="crypto-arrow" aria-hidden="true">↓</div>
+        <div class="crypto-step">
+          <div class="crypto-num">3</div>
+          <div class="crypto-body">
+            <div class="crypto-name">Encryption — AES-GCM 256, random IV per message</div>
+            <p class="crypto-desc">Every message is encrypted with a fresh 96-bit random IV before it leaves your device. The WebRTC transport also applies its own DTLS layer — messages are double-encrypted in transit. The server relays ciphertext it cannot read.</p>
+          </div>
+        </div>
+      </div><!-- /.crypto-stack -->
+
+      <!-- Threat matrix -->
+      <div class="threat-grid">
+        <div class="threat-col threat-yes">
+          <div class="threat-head">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="7" stroke="#4FCB85" stroke-width="1.5"/>
+              <path d="M5 8l2 2 4-4" stroke="#4FCB85" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Protected
+          </div>
+          <ul class="threat-list">
+            <li>Server reading your messages</li>
+            <li>Database breaches (no data stored)</li>
+            <li>Network interception</li>
+            <li>Replay attacks (random IV per msg)</li>
+            <li>Server-side metadata logging</li>
+          </ul>
+        </div>
+        <div class="threat-col threat-no">
+          <div class="threat-head">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="7" stroke="rgba(232,238,245,0.3)" stroke-width="1.5"/>
+              <path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="rgba(232,238,245,0.3)" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            Outside the threat model
+          </div>
+          <ul class="threat-list">
+            <li>Screenshots by the other person</li>
+            <li>Malware already on your device</li>
+            <li>Physical shoulder-surfing</li>
+            <li>Legal seizure of your own device</li>
+          </ul>
+        </div>
+      </div><!-- /.threat-grid -->
+
+      <!-- Open source note -->
+      <div class="oss-note">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" class="oss-icon" aria-hidden="true">
+          <circle cx="10" cy="10" r="9" stroke="#22E5C4" stroke-width="1.5"/>
+          <path d="M10 9v5M10 6.5v.5" stroke="#22E5C4" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <strong>Opening the source code does not break privacy.</strong>
+          This is <em>Kerckhoffs's principle</em> — a secure system must remain secure even if
+          everything about it except the key is public. Your session keys are generated fresh
+          each time using the browser's CSPRNG and are never stored anywhere. An adversary
+          who reads every line of this code still cannot derive your keys. Publishing the
+          source code lets anyone audit for backdoors — which makes ANON <em>more</em> trustworthy,
+          not less.
+        </div>
+      </div>
+
     </div>
   </section>
 
@@ -322,9 +424,8 @@
         <span class="footer-name">Anon</span>
       </div>
       <div class="footer-links">
-        <!-- Update href to your GitHub repo URL -->
-        <a href="#" target="_blank" rel="noopener noreferrer">GitHub</a>
-        <a href="#faq">Security model</a>
+        <a href="https://github.com/5D-group/anon-messenger" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="#security">Security model</a>
         <a href="/app">Open app</a>
       </div>
     </div>
