@@ -63,7 +63,104 @@
     toast._t = setTimeout(() => t.classList.add('hidden'), ms);
   };
 
-  // Smart scroll — only jump to bottom if user was already near bottom
+  // ============ Loading screen ============
+  let _loadFallback = null;
+
+  function showLoading(text, pct, waiting = false) {
+    const s = $('loading-screen');
+    if (!s) return;
+    s.classList.remove('hidden', 'fadeout');
+    const bar = $('ls-bar');
+    const txt = $('ls-txt');
+    if (bar) {
+      bar.classList.toggle('waiting', waiting);
+      if (!waiting) bar.style.width = `${pct}%`;
+    }
+    if (txt && txt.textContent !== text) {
+      txt.classList.add('fade');
+      setTimeout(() => { if (txt) { txt.textContent = text; txt.classList.remove('fade'); } }, 180);
+    }
+  }
+
+  function hideLoading(delay = 300) {
+    clearTimeout(_loadFallback);
+    setTimeout(() => {
+      showLoading('Secure channel established', 100);
+      setTimeout(() => {
+        const s = $('loading-screen');
+        if (!s) return;
+        s.classList.add('fadeout');
+        setTimeout(() => { s.classList.add('hidden'); s.classList.remove('fadeout'); }, 450);
+      }, 350);
+    }, delay);
+  }
+
+  function cancelLoading() {
+    clearTimeout(_loadFallback);
+    const s = $('loading-screen');
+    if (s) { s.classList.add('hidden'); s.classList.remove('fadeout'); }
+  }
+
+  // ============ WS auto-reconnect state ============
+  let _wsRetryDelay = 1000;
+  let _wsRetryTimer = null;
+  let _wsCdTimer   = null;   // countdown interval
+
+  function cancelWsRetry() {
+    clearTimeout(_wsRetryTimer);
+    clearInterval(_wsCdTimer);
+    _wsRetryDelay = 1000;
+    _wsRetryTimer = null;
+  }
+
+  function scheduleWsReconnect() {
+    if (!state.inChat || !state.room) return;
+    cancelWsRetry();
+    const delay = _wsRetryDelay;
+    _wsRetryDelay = Math.min(_wsRetryDelay * 2, 15000);
+    let remaining = Math.ceil(delay / 1000);
+    const setTxt = (t) => {
+      const el = $('reconnect-banner-text');
+      if (el) el.textContent = t;
+    };
+    setTxt(`Reconnecting in ${remaining}s…`);
+    const banner = $('reconnect-banner');
+    if (banner) banner.classList.remove('hidden');
+    _wsCdTimer = setInterval(() => {
+      remaining = Math.max(0, remaining - 1);
+      setTxt(remaining > 0 ? `Reconnecting in ${remaining}s…` : 'Reconnecting…');
+    }, 1000);
+    _wsRetryTimer = setTimeout(async () => {
+      clearInterval(_wsCdTimer);
+      if (!state.inChat || !state.room) return;
+      setTxt('Reconnecting…');
+      try {
+        await reconnectSession();
+        _wsRetryDelay = 1000;
+      } catch {
+        if (state.inChat) scheduleWsReconnect();
+      }
+    }, delay);
+  }
+
+  // ============ Safety number ============
+  function openSafetyDialog() {
+    const peers = Array.from(state.peers.values()).filter(p => p.safetyNumber);
+    if (!peers.length) { toast('Key exchange not yet complete'); return; }
+    const el = $('safety-number');
+    if (el) {
+      if (peers.length === 1) {
+        el.textContent = peers[0].safetyNumber;
+      } else {
+        el.innerHTML = peers.map((p, i) =>
+          `<div class="sn-peer">Peer ${i + 1}: <span>${escapeHtml(p.safetyNumber)}</span></div>`
+        ).join('');
+      }
+    }
+    $('safety-dialog').classList.remove('hidden');
+  }
+
+  // ============ Smart scroll — only jump to bottom if user was already near bottom
   let unreadScrollCount = 0;
 
   function isNearBottom(el, threshold = 120) {
@@ -330,6 +427,7 @@
         state.ws = null;
         setStatus('disconnected', false);
         updateReconnectBanner();
+        if (state.inChat && state.room) scheduleWsReconnect();
       };
     });
   }
@@ -392,11 +490,13 @@
         updateModeIndicator();
         const existing = Array.isArray(msg.peers) ? msg.peers : [];
         if (existing.length === 0) {
+          showLoading('Waiting for the other person…', 55, true);
           showSystemMessage(state.roomMode === 'group'
             ? 'Group room created. Waiting for others to join…'
             : 'Waiting for the other person to join…');
           setStatus('waiting', false);
         } else {
+          showLoading('Establishing peer connection…', 65);
           showSystemMessage(`Connecting to ${existing.length} peer${existing.length>1?'s':''}…`);
           setStatus('connecting…', false);
           await Promise.all(existing.map(async (peerId) => {
@@ -424,6 +524,7 @@
       }
 
       case 'ready': {
+        showLoading('Establishing peer connection…', 65);
         // Mesh sync — (re)connect any missing links (critical for 2-person group).
         const others = Array.isArray(msg.peers) ? msg.peers : [];
         await Promise.all(others.map(async (peerId) => {
@@ -773,6 +874,7 @@
     const { key, safetyNumber } = await deriveSessionKey(state.myKeyPair.privateKey, peerPub);
     peer.sessionKey = key;
     peer.safetyNumber = safetyNumber;
+    hideLoading();           // keys verified — fade out loading screen
     updateSecurityBanner();
     if (state.forceRelay) {
       activateRelayTransport(peer);
@@ -793,6 +895,7 @@
     dc.onopen = () => {
       console.log(`[dc:${peer.id}] open`);
       peer.online = true;
+      showLoading('Performing key exchange…', 80);
       enableChatIfReady();
       showSystemMessage('Secure channel ready — you can chat.');
       sendMyProfileTo(peer);
@@ -810,15 +913,16 @@
   function updateSecurityBanner() {
     const connectedKeys = Array.from(state.peers.values()).filter(p => p.sessionKey).length;
     const anyRelay = Array.from(state.peers.values()).some(p => p.useRelay);
+    const canVerify = connectedKeys > 0;
     if (connectedKeys === 0) {
-      setBanner('Verifying secure channel…', 'info');
+      setBanner('Verifying secure channel…', 'info', false);
     } else if (anyRelay && !state.iceHasTurn) {
-      setBanner('🔒 Encrypted relay chat active. Add Metered TURN on Railway for calls.', 'ok');
+      setBanner('Encrypted relay active. Add TURN for calls.', 'ok', canVerify);
     } else if (connectedKeys === peerCount()) {
-      const via = anyRelay ? ' (mixed relay/P2P)' : '';
-      setBanner(`🔒 Encrypted with ${connectedKeys} peer${connectedKeys>1?'s':''}${via}`, 'ok');
+      const via = anyRelay ? ' (mixed)' : '';
+      setBanner(`Encrypted with ${connectedKeys} peer${connectedKeys>1?'s':''}${via}`, 'ok', canVerify);
     } else {
-      setBanner(`🔒 ${connectedKeys}/${peerCount()} peers encrypted…`, 'info');
+      setBanner(`${connectedKeys}/${peerCount()} peers encrypted…`, 'info', canVerify);
     }
   }
 
@@ -1051,11 +1155,12 @@
       await waitForJoined();
       await loadIceConfig();
       toast('Reconnected');
+      cancelWsRetry();          // clear auto-retry once we're back
       showSystemMessage('Back online — you can chat again.');
       await initPushSubscription();
     } catch (e) {
       console.warn('[reconnect]', e);
-      toast('Reconnect failed — tap Reconnect to try again');
+      toast('Reconnect failed — retrying…');
     } finally {
       state._reconnecting = false;
       updateReconnectBanner();
@@ -1646,12 +1751,18 @@
     if (!msgId || document.hidden) return;
     sendReadReceipt(msgId);
   }
-  function setBanner(text, kind = 'info') {
+  function setBanner(text, kind = 'info', canVerify = false) {
     const b = $('security-banner');
     b.classList.remove('warning', 'info');
     if (kind === 'warning') b.classList.add('warning');
     else if (kind === 'info') b.classList.add('info');
-    b.innerHTML = `<span class="lock">🔒</span><span>${escapeHtml(text)}</span>`;
+    const verifyBtn = canVerify
+      ? `<button type="button" class="verify-btn" id="verify-btn">Verify</button>`
+      : '';
+    b.innerHTML = `<span class="lock">🔒</span><span>${escapeHtml(text)}</span>${verifyBtn}`;
+    if (canVerify) {
+      $('verify-btn')?.addEventListener('click', (e) => { e.stopPropagation(); openSafetyDialog(); });
+    }
   }
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
@@ -1661,6 +1772,16 @@
   function linkify(s) {
     return s.replace(/(https?:\/\/[^\s<]+)/g,
       '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#22E5C4;">$1</a>');
+  }
+
+  // Basic markdown applied AFTER escapeHtml — only safe tags produced
+  function markdownify(s) {
+    return s
+      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')   // fenced code blocks
+      .replace(/`([^`]+)`/g, '<code>$1</code>')                      // inline code
+      .replace(/\*\*(.+?)\*\*/gs, '<strong>$1</strong>')             // **bold**
+      .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')                      // *italic*
+      .replace(/~~(.+?)~~/gs, '<s>$1</s>');                          // ~~strikethrough~~
   }
 
   function bubbleMetaHtml(direction) {
@@ -1686,7 +1807,7 @@
     }
     if (m.kind === 'text') {
       div.dataset.text = m.text;
-      div.innerHTML = `${senderHeader}${linkify(escapeHtml(m.text))}${bubbleMetaHtml(direction)}`;
+      div.innerHTML = `${senderHeader}${linkify(markdownify(escapeHtml(m.text)))}${bubbleMetaHtml(direction)}`;
     } else if (m.kind === 'video') {
       div.classList.add('video', 'image');
       div.innerHTML = `
@@ -2233,13 +2354,20 @@
     state.roomMode = selectedMode;
     state.myProfile = { name: ($('name-input').value || '').trim().slice(0, 40), av: null };
     location.hash = code;
+    showLoading('Connecting to server…', 15);
     try {
       await Promise.all([connectSignaling(), loadIceConfig()]);
+      showLoading('Generating encryption keys…', 32);
       const outcome = waitForJoinOutcome(15000);
       state.ws.send(JSON.stringify({ type: 'join', room: code, mode: selectedMode }));
+      showLoading('Joining room…', 48);
       await outcome;
+      // Start a fallback — hide loading after 12 s even if key exchange is slow
+      clearTimeout(_loadFallback);
+      _loadFallback = setTimeout(() => cancelLoading(), 12000);
       enterChatScreen(code, selectedMode);
     } catch (e) {
+      cancelLoading();
       const msg = e?.message || 'Could not join room';
       if (!state.myId) handleJoinRejected(msg);
       else toast(msg);
@@ -2283,6 +2411,11 @@
     updateScrollBtn();
   });
 
+  $('safety-close-btn')?.addEventListener('click', () => $('safety-dialog').classList.add('hidden'));
+  $('safety-dialog')?.addEventListener('click', (e) => {
+    if (e.target.id === 'safety-dialog') $('safety-dialog').classList.add('hidden');
+  });
+
   $('preview-close')?.addEventListener('click', closeFilePreview);
   $('preview-overlay')?.addEventListener('click', (e) => {
     if (e.target.id === 'preview-overlay') closeFilePreview();
@@ -2305,6 +2438,8 @@
   }
 
   function cleanupAndReturn() {
+    cancelLoading();
+    cancelWsRetry();
     state.inChat = false;
     state.pushEnabled = false;
     sendTyping(false);

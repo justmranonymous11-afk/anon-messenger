@@ -7,7 +7,7 @@
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#00C2A8" />
-  <link rel="stylesheet" href="styles.css?v=20260527b" />
+  <link rel="stylesheet" href="styles.css?v=20260527c" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
@@ -312,6 +312,59 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260527b" type="module"></script>
+  <!-- ============ LOADING SCREEN ============ -->
+  <div id="loading-screen" class="loading-screen hidden" aria-live="polite">
+    <div class="ls-bg" aria-hidden="true">
+      <div class="ls-orb ls-orb-1"></div>
+      <div class="ls-orb ls-orb-2"></div>
+    </div>
+    <div class="ls-content">
+      <div class="ls-logo">
+        <svg viewBox="0 0 96 96" width="76" height="76" aria-hidden="true">
+          <defs>
+            <linearGradient id="ls-g1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#22E5C4"/><stop offset="1" stop-color="#00A38C"/>
+            </linearGradient>
+            <linearGradient id="ls-g2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#7CFFE9" stop-opacity=".8"/>
+              <stop offset="1" stop-color="#00C2A8" stop-opacity=".2"/>
+            </linearGradient>
+          </defs>
+          <polygon points="48,4 86,26 86,70 48,92 10,70 10,26" fill="url(#ls-g1)" stroke="url(#ls-g2)" stroke-width="2"/>
+          <polygon points="48,14 78,31 78,65 48,82 18,65 18,31" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.5"/>
+          <g fill="white">
+            <circle cx="40" cy="40" r="11" fill="none" stroke="white" stroke-width="5"/>
+            <rect x="46" y="42" width="22" height="6" rx="1.2"/>
+            <rect x="58" y="48" width="6" height="8" rx="1.2"/>
+            <rect x="50" y="48" width="4" height="6" rx="1"/>
+          </g>
+        </svg>
+      </div>
+      <div class="ls-wordmark">ANON</div>
+      <div class="ls-track"><div id="ls-bar" class="ls-bar"></div></div>
+      <p id="ls-txt" class="ls-txt">Connecting…</p>
+    </div>
+  </div>
+
+  <!-- ============ SAFETY NUMBER DIALOG ============ -->
+  <div id="safety-dialog" class="incoming hidden" role="dialog" aria-label="Verify secure connection">
+    <div class="incoming-card safety-card">
+      <div class="safety-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="38" height="38" fill="none">
+          <path d="M16 3L4 8v9c0 6.6 5.1 12.8 12 14.5C22.9 29.8 28 23.6 28 17V8L16 3z"
+                fill="rgba(34,229,196,0.12)" stroke="#22E5C4" stroke-width="1.8"/>
+          <path d="M11 16l3.5 3.5L21 12" stroke="#22E5C4" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h2 class="safety-title">Verify secure connection</h2>
+      <p class="safety-intro">Compare this number with your contact. If it matches on both screens, no one is intercepting your messages.</p>
+      <div id="safety-number" class="safety-number">—</div>
+      <p class="safety-hint">Best verified in person or over a separate trusted call — not in this chat.</p>
+      <button id="safety-close-btn" class="primary" style="margin-top:4px;">Got it</button>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260527c" type="module"></script>
 </body>
 </html>

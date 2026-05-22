@@ -1049,6 +1049,129 @@ input[type="text"]::placeholder { color: var(--text-dim); }
   .toast { bottom: 72px; font-size: 13px; }
 }
 
+/* ============ Loading screen ============ */
+.loading-screen {
+  position: fixed; inset: 0; z-index: 2000;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity .45s ease;
+}
+.loading-screen.hidden  { display: none; }
+.loading-screen.fadeout { opacity: 0; pointer-events: none; }
+
+.ls-bg { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.ls-orb { position: absolute; border-radius: 50%; }
+.ls-orb-1 {
+  width: 640px; height: 640px; top: -270px; left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(0,194,168,0.16) 0%, transparent 65%);
+}
+.ls-orb-2 {
+  width: 400px; height: 400px; bottom: -140px; right: -100px;
+  background: radial-gradient(circle, rgba(34,229,196,0.09) 0%, transparent 65%);
+}
+
+.ls-content {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column;
+  align-items: center; gap: 18px;
+  width: 100%; max-width: 260px; text-align: center;
+}
+.ls-logo svg {
+  filter: drop-shadow(0 6px 28px rgba(0,194,168,0.65));
+  animation: levitate 5s ease-in-out infinite;
+}
+.ls-wordmark {
+  font-size: 34px; font-weight: 800; letter-spacing: 0.22em;
+  background: linear-gradient(140deg, #fff 18%, var(--accent-3) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 0 22px rgba(0,194,168,0.32));
+  margin-top: -4px;
+}
+.ls-track {
+  width: 100%; height: 2px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px; overflow: hidden;
+}
+.ls-bar {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent-3), var(--accent));
+  border-radius: 999px;
+  transition: width .65s cubic-bezier(.4,0,.2,1);
+  position: relative;
+}
+/* shimmer sweep along the bar */
+.ls-bar::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.32) 50%, transparent 100%);
+  animation: ls-shim 1.6s linear infinite;
+}
+@keyframes ls-shim { 0% { transform:translateX(-100%); } 100% { transform:translateX(100%); } }
+/* waiting state: bar holds position and breathes */
+.ls-bar.waiting { transition: none; animation: ls-breathe 2s ease-in-out infinite; }
+@keyframes ls-breathe { 0%,100%{opacity:.45;} 50%{opacity:1;} }
+
+.ls-txt {
+  font-size: 13px; color: var(--text-dim); letter-spacing: 0.02em;
+  min-height: 18px; transition: opacity .18s;
+}
+.ls-txt.fade { opacity: 0; }
+
+/* Verify button inside security banner */
+.verify-btn {
+  background: rgba(0,194,168,0.15);
+  border: 1px solid rgba(0,194,168,0.3);
+  color: var(--accent-3);
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 9px; margin-left: 8px;
+  cursor: pointer; line-height: 1.6;
+  transition: background .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.verify-btn:hover { background: rgba(0,194,168,0.25); }
+
+/* ============ Safety number dialog ============ */
+.safety-card {
+  max-width: 320px; width: 90%;
+  text-align: center; padding: 28px 24px 22px;
+}
+.safety-icon { margin-bottom: 12px; }
+.safety-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; color: var(--text); }
+.safety-intro { font-size: 13px; color: var(--text-dim); line-height: 1.65; margin-bottom: 18px; }
+.safety-number {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 17px; font-weight: 700; letter-spacing: 0.08em; line-height: 1.9;
+  color: var(--accent-3);
+  background: rgba(0,194,168,0.08); border: 1px solid rgba(0,194,168,0.2);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 12px;
+  word-break: break-all;
+}
+.sn-peer { font-size: 13px; margin-bottom: 4px; color: var(--text-dim); }
+.sn-peer span { color: var(--accent-3); }
+.safety-hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.55; margin-bottom: 18px; }
+
+/* ============ Markdown in chat bubbles ============ */
+.bubble strong { font-weight: 700; }
+.bubble em     { font-style: italic; }
+.bubble s      { text-decoration: line-through; opacity: 0.65; }
+.bubble code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.875em;
+  background: rgba(0,0,0,0.28);
+  padding: 1px 5px; border-radius: 4px;
+  word-break: break-all;
+}
+.bubble pre {
+  background: rgba(0,0,0,0.28); border-radius: 8px;
+  padding: 10px 12px; overflow-x: auto;
+  margin: 5px 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.83em; line-height: 1.55;
+}
+.bubble pre code { background: none; padding: 0; }
+
 /* ============ Scrollbar ============ */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
