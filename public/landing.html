@@ -6,39 +6,47 @@
   <meta name="referrer" content="no-referrer" />
   <title>Anon — Private Messenger</title>
   <meta name="description" content="End-to-end encrypted chat and calls. No accounts. No logs. Nothing ever stored." />
-  <link rel="stylesheet" href="landing.css?v=20260525a" />
+
+  <!-- Open Graph -->
+  <meta property="og:type"        content="website" />
+  <meta property="og:title"       content="Anon — Private Messenger" />
+  <meta property="og:description" content="End-to-end encrypted chat & calls. No accounts. No logs. Nothing stored on any server." />
+  <meta property="og:image"       content="/og-image.png" />
+  <meta name="twitter:card"       content="summary_large_image" />
+  <meta name="twitter:title"      content="Anon — Private Messenger" />
+  <meta name="twitter:description" content="E2E encrypted chat & calls. No accounts. No logs." />
+
+  <link rel="stylesheet" href="landing.css?v=20260526a" />
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
 <body>
 
-  <!-- ============ Particle field — anti-gravity effect ============ -->
+  <!-- ============ Particles — anti-gravity rising dots ============ -->
   <div class="pf" aria-hidden="true">
-    <!-- white particles -->
-    <div class="pt" style="--x:2%;  --dur:11s; --del:-1s;  --sz:2px;   --op:.30"></div>
-    <div class="pt" style="--x:7%;  --dur:14s; --del:-5s;  --sz:2.5px; --op:.38"></div>
-    <div class="pt" style="--x:11%; --dur:9s;  --del:-2s;  --sz:1.5px; --op:.22"></div>
-    <div class="pt" style="--x:15%; --dur:16s; --del:-8s;  --sz:3px;   --op:.33"></div>
-    <div class="pt" style="--x:19%; --dur:11s; --del:-3s;  --sz:2px;   --op:.28"></div>
-    <div class="pt" style="--x:23%; --dur:8s;  --del:-6s;  --sz:1.5px; --op:.20"></div>
-    <div class="pt" style="--x:28%; --dur:13s; --del:-1s;  --sz:2.5px; --op:.36"></div>
-    <div class="pt" style="--x:32%; --dur:10s; --del:-9s;  --sz:2px;   --op:.28"></div>
-    <div class="pt" style="--x:36%; --dur:12s; --del:-4s;  --sz:1.5px; --op:.22"></div>
-    <div class="pt" style="--x:40%; --dur:9s;  --del:-7s;  --sz:2.5px; --op:.30"></div>
-    <div class="pt" style="--x:44%; --dur:15s; --del:-2s;  --sz:3px;   --op:.40"></div>
-    <div class="pt" style="--x:48%; --dur:11s; --del:-5s;  --sz:2px;   --op:.28"></div>
-    <div class="pt" style="--x:52%; --dur:8s;  --del:-10s; --sz:1.5px; --op:.20"></div>
-    <div class="pt" style="--x:56%; --dur:13s; --del:-3s;  --sz:2.5px; --op:.32"></div>
-    <div class="pt" style="--x:60%; --dur:10s; --del:-6s;  --sz:2px;   --op:.26"></div>
-    <div class="pt" style="--x:64%; --dur:14s; --del:-1s;  --sz:3px;   --op:.36"></div>
-    <div class="pt" style="--x:68%; --dur:9s;  --del:-8s;  --sz:1.5px; --op:.20"></div>
-    <div class="pt" style="--x:72%; --dur:12s; --del:-4s;  --sz:2.5px; --op:.30"></div>
-    <div class="pt" style="--x:76%; --dur:11s; --del:-7s;  --sz:2px;   --op:.28"></div>
-    <div class="pt" style="--x:80%; --dur:8s;  --del:-2s;  --sz:1.5px; --op:.22"></div>
-    <div class="pt" style="--x:84%; --dur:15s; --del:-5s;  --sz:3px;   --op:.36"></div>
-    <div class="pt" style="--x:88%; --dur:10s; --del:-9s;  --sz:2px;   --op:.28"></div>
-    <div class="pt" style="--x:92%; --dur:12s; --del:-3s;  --sz:2.5px; --op:.26"></div>
-    <div class="pt" style="--x:96%; --dur:13s; --del:-6s;  --sz:2px;   --op:.24"></div>
-    <!-- teal accent particles -->
+    <div class="pt"  style="--x:2%;  --dur:11s; --del:-1s;  --sz:2px;   --op:.30"></div>
+    <div class="pt"  style="--x:7%;  --dur:14s; --del:-5s;  --sz:2.5px; --op:.38"></div>
+    <div class="pt"  style="--x:11%; --dur:9s;  --del:-2s;  --sz:1.5px; --op:.22"></div>
+    <div class="pt"  style="--x:15%; --dur:16s; --del:-8s;  --sz:3px;   --op:.33"></div>
+    <div class="pt"  style="--x:19%; --dur:11s; --del:-3s;  --sz:2px;   --op:.28"></div>
+    <div class="pt"  style="--x:23%; --dur:8s;  --del:-6s;  --sz:1.5px; --op:.20"></div>
+    <div class="pt"  style="--x:28%; --dur:13s; --del:-1s;  --sz:2.5px; --op:.36"></div>
+    <div class="pt"  style="--x:32%; --dur:10s; --del:-9s;  --sz:2px;   --op:.28"></div>
+    <div class="pt"  style="--x:36%; --dur:12s; --del:-4s;  --sz:1.5px; --op:.22"></div>
+    <div class="pt"  style="--x:40%; --dur:9s;  --del:-7s;  --sz:2.5px; --op:.30"></div>
+    <div class="pt"  style="--x:44%; --dur:15s; --del:-2s;  --sz:3px;   --op:.40"></div>
+    <div class="pt"  style="--x:48%; --dur:11s; --del:-5s;  --sz:2px;   --op:.28"></div>
+    <div class="pt"  style="--x:52%; --dur:8s;  --del:-10s; --sz:1.5px; --op:.20"></div>
+    <div class="pt"  style="--x:56%; --dur:13s; --del:-3s;  --sz:2.5px; --op:.32"></div>
+    <div class="pt"  style="--x:60%; --dur:10s; --del:-6s;  --sz:2px;   --op:.26"></div>
+    <div class="pt"  style="--x:64%; --dur:14s; --del:-1s;  --sz:3px;   --op:.36"></div>
+    <div class="pt"  style="--x:68%; --dur:9s;  --del:-8s;  --sz:1.5px; --op:.20"></div>
+    <div class="pt"  style="--x:72%; --dur:12s; --del:-4s;  --sz:2.5px; --op:.30"></div>
+    <div class="pt"  style="--x:76%; --dur:11s; --del:-7s;  --sz:2px;   --op:.28"></div>
+    <div class="pt"  style="--x:80%; --dur:8s;  --del:-2s;  --sz:1.5px; --op:.22"></div>
+    <div class="pt"  style="--x:84%; --dur:15s; --del:-5s;  --sz:3px;   --op:.36"></div>
+    <div class="pt"  style="--x:88%; --dur:10s; --del:-9s;  --sz:2px;   --op:.28"></div>
+    <div class="pt"  style="--x:92%; --dur:12s; --del:-3s;  --sz:2.5px; --op:.26"></div>
+    <div class="pt"  style="--x:96%; --dur:13s; --del:-6s;  --sz:2px;   --op:.24"></div>
     <div class="pt tc" style="--x:5%;  --dur:13s; --del:-4s;  --sz:2.5px; --op:.55"></div>
     <div class="pt tc" style="--x:17%; --dur:9s;  --del:-7s;  --sz:2px;   --op:.48"></div>
     <div class="pt tc" style="--x:33%; --dur:15s; --del:-1s;  --sz:3.5px; --op:.60"></div>
@@ -54,10 +62,11 @@
   <div class="bg-orb orb-2" aria-hidden="true"></div>
   <div class="bg-orb orb-3" aria-hidden="true"></div>
 
-  <!-- ============ Main content ============ -->
-  <main class="hero">
+  <!-- ============================================================
+       HERO SECTION
+  ============================================================ -->
+  <section class="s-hero">
 
-    <!-- Brand -->
     <div class="brand">
       <div class="brand-logo">
         <svg viewBox="0 0 96 96" width="76" height="76" aria-label="Anon logo">
@@ -89,20 +98,16 @@
       <span class="tagline-sub">No accounts &nbsp;·&nbsp; No logs &nbsp;·&nbsp; No servers in the way.</span>
     </p>
 
-    <!-- ============ Feature tiles ============ -->
+    <!-- Feature tiles -->
     <div class="tiles">
 
-      <!-- Tile 1 — E2E Encrypted -->
       <div class="tile tile-1">
         <div class="tile-icon">
           <svg viewBox="0 0 40 40" width="44" height="44" fill="none" aria-hidden="true">
-            <!-- Lock body -->
             <rect x="8" y="19" width="24" height="17" rx="3"
                   fill="rgba(34,229,196,0.12)" stroke="#22E5C4" stroke-width="1.8"/>
-            <!-- Keyhole -->
             <circle cx="20" cy="27" r="2.6" fill="#22E5C4"/>
             <rect x="18.6" y="28.2" width="2.8" height="4" rx="1" fill="#22E5C4"/>
-            <!-- Shackle — drops into place on load -->
             <g class="shackle">
               <path d="M13 19V14a7 7 0 0 1 14 0v5"
                     stroke="#22E5C4" stroke-width="1.9" stroke-linecap="round" fill="none"/>
@@ -110,19 +115,16 @@
           </svg>
         </div>
         <div class="tile-label">E2E Encrypted</div>
-        <div class="tile-desc">AES-GCM 256 + ECDH key exchange on every single message</div>
+        <div class="tile-desc">AES-GCM 256 + ECDH key exchange on every message</div>
       </div>
 
-      <!-- Tile 2 — No Accounts -->
       <div class="tile tile-2">
         <div class="tile-icon">
           <svg viewBox="0 0 40 40" width="44" height="44" fill="none" aria-hidden="true">
-            <!-- Person -->
             <circle cx="20" cy="14" r="6"
                     fill="rgba(34,229,196,0.12)" stroke="#22E5C4" stroke-width="1.8"/>
             <path d="M8 35c0-6.6 5.4-12 12-12s12 5.4 12 12"
                   stroke="#22E5C4" stroke-width="1.8" stroke-linecap="round"/>
-            <!-- Slash draws in -->
             <line class="user-slash"
                   x1="5" y1="5" x2="35" y2="35"
                   stroke="#22E5C4" stroke-width="2.2" stroke-linecap="round"
@@ -133,15 +135,12 @@
         <div class="tile-desc">No sign-up, no email, no identity ever required</div>
       </div>
 
-      <!-- Tile 3 — Zero Logs -->
       <div class="tile tile-3">
         <div class="tile-icon">
           <svg viewBox="0 0 40 40" width="44" height="44" fill="none" aria-hidden="true">
-            <!-- Eye -->
             <path d="M4 20c0 0 6-10 16-10s16 10 16 10-6 10-16 10S4 20 4 20z"
                   stroke="#22E5C4" stroke-width="1.8" fill="rgba(34,229,196,0.12)"/>
             <circle class="eye-pupil" cx="20" cy="20" r="4" fill="#22E5C4"/>
-            <!-- Slash draws in -->
             <line class="eye-slash"
                   x1="5" y1="5" x2="35" y2="35"
                   stroke="#22E5C4" stroke-width="2.2" stroke-linecap="round"
@@ -149,24 +148,192 @@
           </svg>
         </div>
         <div class="tile-label">Zero Logs</div>
-        <div class="tile-desc">Server never stores messages, metadata, or IP addresses</div>
+        <div class="tile-desc">Messages vanish the instant the session ends</div>
       </div>
 
     </div><!-- /.tiles -->
 
-    <!-- CTA -->
-    <a href="/" class="cta-btn">
-      <span>Start chatting</span>
-      <svg viewBox="0 0 20 20" width="18" height="18" fill="none"
-           stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
-           aria-hidden="true">
-        <path d="M4 10h12M11 4l6 6-6 6"/>
+    <!-- CTA row -->
+    <div class="cta-row">
+      <a href="/app" class="cta-primary">
+        <span>Start chatting</span>
+        <svg viewBox="0 0 20 20" width="17" height="17" fill="none"
+             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 10h12M11 4l6 6-6 6"/>
+        </svg>
+      </a>
+      <!-- Update href to your GitHub repo URL -->
+      <a href="#" class="cta-ghost" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor" aria-hidden="true">
+          <path fill-rule="evenodd" d="M10 0C4.477 0 0 4.477 0 10c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.604-3.369-1.341-3.369-1.341-.454-1.155-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 10 4.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C17.137 18.163 20 14.418 20 10 20 4.477 15.523 0 10 0z" clip-rule="evenodd"/>
+        </svg>
+        <span>View source</span>
+      </a>
+    </div>
+
+    <a href="#how" class="scroll-hint" aria-label="Learn more">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M12 5v14M5 12l7 7 7-7"/>
       </svg>
     </a>
 
-    <p class="footnote">No data stored &nbsp;·&nbsp; Open source &nbsp;·&nbsp; Free forever</p>
+  </section><!-- /.s-hero -->
 
-  </main>
+  <!-- ============================================================
+       HOW IT WORKS
+  ============================================================ -->
+  <section class="s-how" id="how">
+    <div class="sec-inner">
+      <div class="sec-label">TRANSPARENT BY DESIGN</div>
+      <h2 class="sec-heading">How it works</h2>
+
+      <div class="steps">
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
+                <rect x="4" y="8" width="24" height="18" rx="3" stroke="#22E5C4" stroke-width="1.8" fill="rgba(34,229,196,0.08)"/>
+                <path d="M10 14h12M10 18h8" stroke="#22E5C4" stroke-width="1.6" stroke-linecap="round"/>
+                <path d="M22 6l4 4-4 4" stroke="#22E5C4" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <h3 class="step-title">Share a room code</h3>
+            <p class="step-desc">Generate a unique code in your browser and share it via any channel — Signal, email, in person. Nothing is sent to any server yet.</p>
+          </div>
+        </div>
+
+        <div class="step-connector" aria-hidden="true"></div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
+                <rect x="7" y="15" width="18" height="13" rx="2.5" stroke="#22E5C4" stroke-width="1.8" fill="rgba(34,229,196,0.08)"/>
+                <path d="M11 15V11a5 5 0 0 1 10 0v4" stroke="#22E5C4" stroke-width="1.8" stroke-linecap="round"/>
+                <circle cx="16" cy="21" r="2" fill="#22E5C4"/>
+              </svg>
+            </div>
+            <h3 class="step-title">Keys exchange in your browser</h3>
+            <p class="step-desc">When both sides enter the same code, your browsers perform an ECDH P-256 handshake directly. No server ever sees, stores, or touches your keys.</p>
+          </div>
+        </div>
+
+        <div class="step-connector" aria-hidden="true"></div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
+                <path d="M4 6h24v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" stroke="#22E5C4" stroke-width="1.8" fill="rgba(34,229,196,0.08)"/>
+                <path d="M10 26l2-4h8l2 4" stroke="#22E5C4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M10 12h12M10 16h7" stroke="#22E5C4" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <h3 class="step-title">Chat — fully encrypted</h3>
+            <p class="step-desc">Every message is AES-GCM 256-bit encrypted before it leaves your device. Close the tab and everything vanishes instantly — no history, no cache.</p>
+          </div>
+        </div>
+
+      </div><!-- /.steps -->
+    </div>
+  </section>
+
+  <!-- ============================================================
+       MADE FOR
+  ============================================================ -->
+  <div class="s-for">
+    <div class="sec-inner">
+      <p class="for-text">
+        Built for <strong>journalists</strong>, <strong>lawyers</strong>, <strong>doctors</strong>, and <strong>whistleblowers</strong> —
+        and anyone who needs a conversation that simply leaves no trace.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       FAQ
+  ============================================================ -->
+  <section class="s-faq" id="faq">
+    <div class="sec-inner">
+      <div class="sec-label">TRANSPARENCY</div>
+      <h2 class="sec-heading">Questions</h2>
+
+      <div class="faq-list">
+
+        <details class="faq-item">
+          <summary>How do I connect without an account?</summary>
+          <div class="faq-body">
+            Generate a room code and share it with the other person. Both of you enter the same code and you're connected. That's it — no email, no password, no profile.
+          </div>
+        </details>
+
+        <details class="faq-item">
+          <summary>What happens when I close the tab?</summary>
+          <div class="faq-body">
+            The session ends immediately and everything is gone. Messages exist only in your browser's RAM during the session — they are never written to disk, a database, or any log file. There is no history.
+          </div>
+        </details>
+
+        <details class="faq-item">
+          <summary>Can the server administrator read my messages?</summary>
+          <div class="faq-body">
+            No. Encryption keys are negotiated directly between your browsers via ECDH. The server only relays encrypted blobs; it has no keys and cannot read any content. Even a full server compromise reveals nothing about message contents.
+          </div>
+        </details>
+
+        <details class="faq-item">
+          <summary>What does ANON <em>not</em> protect against?</summary>
+          <div class="faq-body">
+            ANON protects against server-side surveillance and data breaches. It does not protect against: screenshots by the other person, malware already running on either device, or someone physically looking at your screen. Always consider your full threat model.
+          </div>
+        </details>
+
+        <details class="faq-item">
+          <summary>Is the source code available?</summary>
+          <div class="faq-body">
+            Yes. ANON is fully open source — the signaling server, the encryption layer, and the entire client are available for inspection.
+            <a href="#" class="faq-link" target="_blank" rel="noopener noreferrer">View on GitHub →</a>
+          </div>
+        </details>
+
+      </div><!-- /.faq-list -->
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FOOTER
+  ============================================================ -->
+  <footer class="s-footer">
+    <div class="sec-inner footer-inner">
+      <div class="footer-brand">
+        <svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true">
+          <polygon points="24,2 43,13 43,35 24,46 5,35 5,13" fill="#00C2A8"/>
+          <circle cx="20" cy="20" r="5.5" fill="none" stroke="white" stroke-width="2.5"/>
+          <rect x="23" y="21" width="11" height="3" rx="0.8" fill="white"/>
+          <rect x="29" y="24" width="3" height="4" rx="0.8" fill="white"/>
+          <rect x="25" y="24" width="2" height="3" rx="0.6" fill="white"/>
+        </svg>
+        <span class="footer-name">Anon</span>
+      </div>
+      <div class="footer-links">
+        <!-- Update href to your GitHub repo URL -->
+        <a href="#" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="#faq">Security model</a>
+        <a href="/app">Open app</a>
+      </div>
+    </div>
+    <div class="sec-inner">
+      <p class="footer-fine">
+        No accounts required &nbsp;·&nbsp; Messages encrypted in your browser &nbsp;·&nbsp; Server cannot read your data
+      </p>
+    </div>
+  </footer>
 
 </body>
 </html>
