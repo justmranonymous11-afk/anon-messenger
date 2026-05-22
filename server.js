@@ -399,7 +399,17 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    let filePath = path.join(PUBLIC_DIR, urlPath === '/' ? 'index.html' : urlPath);
+    // Route /       → landing page
+    //       /app    → chat app
+    //       /ROOMCODE or /app/ROOMCODE → SPA (chat app reads pathname)
+    let filePath;
+    if (urlPath === '/') {
+      filePath = path.join(PUBLIC_DIR, 'landing.html');
+    } else if (urlPath === '/app' || urlPath === '/app/') {
+      filePath = path.join(PUBLIC_DIR, 'index.html');
+    } else {
+      filePath = path.join(PUBLIC_DIR, urlPath);
+    }
 
     if (!filePath.startsWith(PUBLIC_DIR)) {
       res.writeHead(403); res.end('Forbidden'); return;
@@ -417,8 +427,8 @@ const httpServer = http.createServer(async (req, res) => {
         fs.createReadStream(p).pipe(res);
       };
       if (!err && stat.isFile()) { send(filePath); return; }
-      // /@ROOMCODE or /ROOMCODE — serve the SPA (client reads pathname).
-      const seg = urlPath.replace(/^\//, '').replace(/^@/, '');
+      // /@ROOMCODE, /ROOMCODE, or /app/ROOMCODE — serve the SPA.
+      const seg = urlPath.replace(/^\/(?:app\/)?/, '').replace(/^@/, '');
       if (/^[A-Za-z0-9]{4,12}$/.test(seg)) {
         const spa = path.join(PUBLIC_DIR, 'index.html');
         fs.stat(spa, (err2, stat2) => {

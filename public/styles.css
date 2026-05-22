@@ -834,12 +834,18 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 .call-overlay.hidden { display: none; }
 .call-content { position: relative; flex: 1; }
 #remote-video { width: 100%; height: 100%; object-fit: cover; background: #0E1621; }
+#remote-video.screen-share,
+#local-video.screen-share { object-fit: contain; }
 #local-video {
   position: absolute; top: 20px; right: 20px;
   width: 130px; height: 180px; border-radius: 14px;
   object-fit: cover; background: #17212B;
   box-shadow: 0 8px 28px rgba(0,0,0,0.55);
   border: 2px solid rgba(255,255,255,0.12);
+}
+#local-video.screen-share {
+  width: 200px; height: 120px;
+  border-color: rgba(82, 136, 247, 0.55);
 }
 .call-info { position: absolute; top: 20px; left: 20px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,0.6); }
 .call-peer   { font-size: 22px; font-weight: 600; }
@@ -868,6 +874,8 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 .call-btn.hangup:hover { background: #c43c3c; }
 .call-btn.accept       { background: var(--success); }
 .call-btn.accept:hover { background: #3fb674; }
+.call-btn.active       { background: var(--accent); }
+.call-btn.active:hover { background: #6b9ef8; }
 
 /* ============ Incoming call / dialogs ============ */
 .incoming {

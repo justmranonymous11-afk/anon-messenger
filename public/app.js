@@ -24,6 +24,7 @@
  *   {t:'profile',  p:{iv,ct}}                encrypted JSON {name, av} (session-only)
  *   {t:'call-invite', callType}             requesting a call
  *   {t:'call-accept'} / {t:'call-decline'} / {t:'call-end'}
+ *   {t:'call-screen', on: bool}              peer started/stopped screen share
  */
 
 (() => {
@@ -76,11 +77,15 @@
     // 1-on-1 call (only when peers.size === 1). Group calls = future.
     callPeerId: null,         // id of the peer we're calling
     localStream: null,
+    screenStream: null,
     callType: null,
     callActive: false,
+    sharingScreen: false,
+    remoteSharingScreen: false,
     callTimerStart: 0,
     callTimerInt: null,
     senders: [],
+    videoSender: null,
     // recording
     mediaRecorder: null,
     recordChunks: [],
@@ -835,6 +840,17 @@
           if (peer.id !== state.callPeerId) return;
           teardownCall();
           showSystemMessage('Call ended.');
+          return;
+        case 'call-screen':
+          if (peer.id !== state.callPeerId) return;
+          state.remoteSharingScreen = !!msg.on;
+          updateCallVideoLayout();
+          if (msg.on) {
+            $('call-status').textContent = 'Viewing screen share';
+            toast('Peer is sharing their screen');
+          } else if (state.callActive) {
+            $('call-status').textContent = 'Connected';
+          }
           return;
       }
     } catch (e) { console.warn('DC handler error', e); }
@@ -2175,13 +2191,134 @@
   }
 
   // ===========================================================
-  // Calls (audio / video)
+  // Calls (audio / video / screen share)
   // ===========================================================
   async function getMedia(video) {
     return navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: video ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' } : false,
     });
+  }
+
+  async function getDisplayMedia() {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('unsupported');
+    }
+    return navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 15, max: 30 } },
+      audio: false,
+    });
+  }
+
+  function getCallPeer() {
+    return state.callPeerId ? getPeer(state.callPeerId) : null;
+  }
+
+  function getVideoSender() {
+    if (state.videoSender) return state.videoSender;
+    const peer = getCallPeer();
+    if (peer?.pc) {
+      const s = peer.pc.getSenders().find(x => x.track?.kind === 'video');
+      if (s) return s;
+    }
+    return state.senders.find(s => s.track?.kind === 'video') || null;
+  }
+
+  async function replaceOutgoingVideoTrack(track) {
+    const peer = getCallPeer();
+    if (!peer?.pc) return;
+    const sender = getVideoSender();
+    if (sender) {
+      await sender.replaceTrack(track);
+      return;
+    }
+    if (!track) return;
+    const stream = state.screenStream || state.localStream || new MediaStream([track]);
+    const s = peer.pc.addTrack(track, stream);
+    state.senders.push(s);
+    state.videoSender = s;
+  }
+
+  function updateCallVideoLayout() {
+    const localVideo = $('local-video');
+    const remoteVideo = $('remote-video');
+    const showLocal = state.sharingScreen || state.callType === 'video';
+    const showRemote = state.remoteSharingScreen || state.callType === 'video';
+    if (localVideo) {
+      localVideo.style.display = showLocal ? 'block' : 'none';
+      localVideo.classList.toggle('screen-share', state.sharingScreen);
+    }
+    if (remoteVideo) {
+      remoteVideo.style.display = showRemote ? 'block' : 'none';
+      remoteVideo.classList.toggle('screen-share', state.remoteSharingScreen);
+    }
+    const ssBtn = $('screen-share-btn');
+    if (ssBtn) ssBtn.classList.toggle('active', state.sharingScreen);
+  }
+
+  async function startScreenShare() {
+    if (!state.callActive) { toast('Start a call first'); return; }
+    const peer = getCallPeer();
+    if (!peer?.pc) { toast('Not connected'); return; }
+    if (state.sharingScreen) { await stopScreenShare(); return; }
+    try {
+      state.screenStream = await getDisplayMedia();
+    } catch (e) {
+      if (e?.name === 'NotAllowedError') toast('Screen share cancelled');
+      else toast('Screen share not supported on this device');
+      return;
+    }
+    const screenTrack = state.screenStream.getVideoTracks()[0];
+    if (!screenTrack) {
+      state.screenStream.getTracks().forEach(t => t.stop());
+      state.screenStream = null;
+      toast('No video track from screen');
+      return;
+    }
+    screenTrack.onended = () => stopScreenShare();
+    try {
+      await replaceOutgoingVideoTrack(screenTrack);
+    } catch (e) {
+      console.error('[screen]', e);
+      state.screenStream.getTracks().forEach(t => t.stop());
+      state.screenStream = null;
+      toast('Could not share screen');
+      return;
+    }
+    state.sharingScreen = true;
+    const localVideo = $('local-video');
+    if (localVideo) localVideo.srcObject = state.screenStream;
+    dcSendTo(peer, { t: 'call-screen', on: true });
+    updateCallVideoLayout();
+    $('call-status').textContent = 'Sharing your screen';
+    toast('Screen sharing on');
+  }
+
+  async function stopScreenShare(notify = true) {
+    if (!state.sharingScreen && !state.screenStream) return;
+    const peer = getCallPeer();
+    state.sharingScreen = false;
+    if (state.screenStream) {
+      state.screenStream.getTracks().forEach(t => t.stop());
+      state.screenStream = null;
+    }
+    const camTrack = state.localStream?.getVideoTracks()[0] || null;
+    try {
+      if (state.callType === 'video' && camTrack?.enabled) {
+        await replaceOutgoingVideoTrack(camTrack);
+        const localVideo = $('local-video');
+        if (localVideo) localVideo.srcObject = state.localStream;
+      } else {
+        await replaceOutgoingVideoTrack(null);
+        const localVideo = $('local-video');
+        if (localVideo) localVideo.srcObject = null;
+      }
+    } catch (e) {
+      console.warn('[screen] restore camera failed', e);
+    }
+    if (notify && peer) dcSendTo(peer, { t: 'call-screen', on: false });
+    updateCallVideoLayout();
+    if (state.callActive) $('call-status').textContent = 'Connected';
   }
 
   async function startCall(type) {
@@ -2232,23 +2369,27 @@
     localVideo.srcObject = state.localStream;
     state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     state.senders = [];
+    state.videoSender = null;
     state.localStream.getTracks().forEach(track => {
       const sender = peer.pc.addTrack(track, state.localStream);
       state.senders.push(sender);
+      if (track.kind === 'video') state.videoSender = sender;
     });
   }
 
   function showCallOverlay(type, status) {
     $('call-overlay').classList.remove('hidden');
     $('call-status').textContent = status;
-    $('local-video').style.display = (type === 'video') ? 'block' : 'none';
-    $('remote-video').style.display = (type === 'video') ? 'block' : 'none';
+    state.remoteSharingScreen = false;
+    updateCallVideoLayout();
   }
 
   function hideCallOverlay() {
     $('call-overlay').classList.add('hidden');
     $('call-status').textContent = '';
     $('call-timer').textContent = '';
+    state.remoteSharingScreen = false;
+    state.sharingScreen = false;
   }
 
   function showIncomingCall(type) {
@@ -2297,10 +2438,12 @@
   }
 
   function teardownCall() {
+    stopScreenShare(false);
     clearInterval(state.callTimerInt);
     state.callTimerInt = null;
     state.callActive = false;
     state.callType = null;
+    state.remoteSharingScreen = false;
     if (state.localStream) {
       state.localStream.getTracks().forEach(t => t.stop());
       state.localStream = null;
@@ -2310,6 +2453,7 @@
       state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     }
     state.senders = [];
+    state.videoSender = null;
     state.callPeerId = null;
     const lv = $('local-video'); lv.srcObject = null;
     const rv = $('remote-video'); rv.srcObject = null;
@@ -2334,13 +2478,22 @@
     e.currentTarget.classList.toggle('muted', !audio.enabled);
   });
 
-  $('cam-btn').addEventListener('click', (e) => {
+  $('cam-btn').addEventListener('click', async (e) => {
+    if (state.sharingScreen) {
+      await stopScreenShare();
+      return;
+    }
     if (!state.localStream) return;
     const video = state.localStream.getVideoTracks()[0];
     if (!video) return;
     video.enabled = !video.enabled;
     e.currentTarget.classList.toggle('muted', !video.enabled);
+    if (state.callActive && video.enabled) {
+      try { await replaceOutgoingVideoTrack(video); } catch {}
+    }
   });
+
+  $('screen-share-btn')?.addEventListener('click', () => startScreenShare());
 
   window.addEventListener('beforeunload', () => {
     try { state.ws && state.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
