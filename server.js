@@ -722,9 +722,12 @@ function handleConnection(ws) {
           mode: room.mode,
           peers: existingIds,
         });
+        // Two-person group uses `ready` only (like 1-on-1). peer-joined + ready
+        // together caused offer collisions; 3+ still need peer-joined for mesh.
+        const pairGroup = room.mode === 'group' && room.peers.size === 2;
         for (const [id, peer] of room.peers) {
           if (id === myId) continue;
-          safeSend(peer, { type: 'peer-joined', id: myId });
+          if (!pairGroup) safeSend(peer, { type: 'peer-joined', id: myId });
         }
         notifyRoomReady(room);
         return;

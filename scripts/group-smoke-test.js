@@ -57,13 +57,20 @@ function assert(cond, msg) {
   await b.connect();
   b.send({ type: 'join', room, mode: 'group' });
   const bJ = await b.next();
-  const aPJ = await a.next();
+  const aFirst = await a.next();
   assert(bJ.type === 'joined' && bJ.peers.includes(a.myId), 'B sees A');
-  assert(aPJ.type === 'peer-joined', 'A notified B joined');
-
-  const aReady = await a.next();
+  assert(aFirst.type === 'ready', 'pair group: ready only (no peer-joined)');
   const bReady = await b.next();
-  assert(aReady.type === 'ready' && bReady.type === 'ready', 'ready after 2 in group');
+  assert(bReady.type === 'ready', 'B gets ready');
+
+  // Pair group signal path
+  a.send({ type: 'signal', to: bJ.you, payload: { kind: 'pubkey', key: 'testAB' } });
+  let bSig;
+  for (let i = 0; i < 4; i++) {
+    bSig = await b.next();
+    if (bSig.type === 'signal') break;
+  }
+  assert(bSig && bSig.type === 'signal' && bSig.from === a.myId, 'pair group A->B signal');
 
   // C joins
   await c.connect();

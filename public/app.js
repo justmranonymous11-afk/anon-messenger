@@ -307,12 +307,12 @@
       }
 
       case 'ready': {
-        // Mesh sync when the room is full enough — (re)connect any missing links.
+        // Mesh sync — (re)connect any missing links (critical for 2-person group).
         const others = Array.isArray(msg.peers) ? msg.peers : [];
         await Promise.all(others.map(async (peerId) => {
           if (peerId === state.myId) return;
           const peer = getPeer(peerId);
-          if (peer && peerTransportReady(peer)) return;
+          if (peer && (peerTransportReady(peer) || peerLinkBusy(peer))) return;
           const weInitiate = state.myId < peerId;
           await ensurePeerConnection(peerId, weInitiate);
         }));
@@ -613,7 +613,21 @@
       description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
     peer.ignoreOffer = !peer.polite && offerCollision;
     console.log(`[pc:${peer.id}] remote ${description.type}, collision=${offerCollision}, ignoring=${peer.ignoreOffer}, state=${pc.signalingState}`);
-    if (peer.ignoreOffer) return;
+    if (peer.ignoreOffer) {
+      // Impolite side ignored a glare offer — retry once after the polite peer settles.
+      setTimeout(async () => {
+        if (!peer.pc || peerTransportReady(peer) || peerLinkBusy(peer)) return;
+        if (peer.pc.connectionState === 'failed' || peer.pc.connectionState === 'closed') return;
+        if (!peer.weInitiate || peer.pc.signalingState !== 'stable') return;
+        try {
+          peer.makingOffer = true;
+          await peer.pc.setLocalDescription();
+          sendSignal(peer.id, { kind: 'description', description: peer.pc.localDescription });
+        } catch (e) { console.warn(`[pc:${peer.id}] glare retry failed`, e); }
+        finally { peer.makingOffer = false; }
+      }, 600);
+      return;
+    }
     if (offerCollision) {
       await Promise.all([
         pc.setLocalDescription({ type: 'rollback' }).catch(() => {}),
@@ -830,6 +844,14 @@
     return p.sessionKey && (
       (p.dc && p.dc.readyState === 'open') || p.useRelay
     );
+  }
+
+  function peerLinkBusy(p) {
+    if (!p || !p.pc) return false;
+    const st = p.pc.connectionState;
+    if (st === 'failed' || st === 'closed') return false;
+    if (peerTransportReady(p)) return false;
+    return true;
   }
 
   function anyPeerReady() {
@@ -1251,9 +1273,16 @@
       const peer = state.peers.values().next().value;
       const displayName = (peer.profile.name && peer.profile.name.trim())
         ? peer.profile.name.trim() : 'Anonymous peer';
-      if (nameEl) nameEl.textContent = displayName;
+      if (nameEl) {
+        nameEl.textContent = state.roomMode === 'group'
+          ? `Group · ${displayName}`
+          : displayName;
+      }
       if (avEl) {
-        if (peer.profile.av) {
+        if (state.roomMode === 'group') {
+          avEl.style.backgroundImage = '';
+          avEl.textContent = '2';
+        } else if (peer.profile.av) {
           avEl.style.backgroundImage = `url(${peer.profile.av})`;
           avEl.style.backgroundSize = 'cover';
           avEl.style.backgroundPosition = 'center';
@@ -1263,6 +1292,7 @@
           avEl.textContent = (displayName[0] || '?').toUpperCase();
         }
       }
+      updatePresenceUI();
       return;
     }
 
