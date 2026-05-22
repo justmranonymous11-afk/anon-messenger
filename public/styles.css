@@ -253,6 +253,18 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 #gen-btn:hover  { background: rgba(255,255,255,0.09); }
 #gen-btn:active { transform: rotate(180deg); }
 
+#share-code-btn {
+  background: rgba(0,194,168,0.10);
+  border: 1px solid rgba(0,194,168,0.22);
+  color: var(--accent-3);
+  border-radius: var(--radius-md);
+  width: 50px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, transform .1s;
+}
+#share-code-btn:hover  { background: rgba(0,194,168,0.18); }
+#share-code-btn:active { transform: scale(0.9); }
+
 /* ============ Primary button ============ */
 .primary {
   background: linear-gradient(135deg, #28EDD0 0%, var(--accent) 55%, var(--accent-2) 100%);
@@ -409,6 +421,9 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 }
 .header-actions .icon-btn:disabled { opacity: 0.55; background: rgba(0,194,168,0.05); }
 .header-actions .icon-btn:not(:disabled):hover { background: rgba(0,194,168,0.2); }
+/* Share btn: slightly different accent to distinguish from call buttons */
+.header-actions .share-btn { background: rgba(0,194,168,0.08); color: var(--accent-3); }
+.header-actions .share-btn:not(:disabled):hover { background: rgba(0,194,168,0.18); }
 
 #profile-btn.has-profile {
   overflow: hidden;
@@ -874,8 +889,12 @@ input[type="text"]::placeholder { color: var(--text-dim); }
 .call-btn.hangup:hover { background: #c43c3c; }
 .call-btn.accept       { background: var(--success); }
 .call-btn.accept:hover { background: #3fb674; }
-.call-btn.active       { background: var(--accent); }
-.call-btn.active:hover { background: #6b9ef8; }
+/* Active = feature is ON (screen share, etc.) */
+.call-btn.active       { background: rgba(34,229,196,0.25); color: var(--accent-3); box-shadow: 0 0 0 2px rgba(34,229,196,0.3) inset; }
+.call-btn.active:hover { background: rgba(34,229,196,0.36); }
+/* ss-mode = cam-btn while screen sharing (acts as "back to camera") */
+.call-btn.ss-mode       { background: rgba(34,229,196,0.12); color: var(--accent-3); }
+.call-btn.ss-mode:hover { background: rgba(34,229,196,0.22); }
 
 /* ============ Incoming call / dialogs ============ */
 .incoming {

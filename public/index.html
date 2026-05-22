@@ -7,7 +7,7 @@
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#00C2A8" />
-  <link rel="stylesheet" href="styles.css?v=20260525a" />
+  <link rel="stylesheet" href="styles.css?v=20260526c" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
@@ -100,6 +100,13 @@
         <div class="room-row">
           <input id="room-input" type="text" maxlength="12" autocomplete="off" spellcheck="false" placeholder="e.g. K7P2QX" />
           <button id="gen-btn" type="button" title="Generate new code">↻</button>
+          <button id="share-code-btn" type="button" title="Share invite link">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+              <polyline points="16 6 12 2 8 6"/>
+              <line x1="12" y1="2" x2="12" y2="15"/>
+            </svg>
+          </button>
         </div>
         <small id="room-hint">Share this code with the other person. Both must enter it.</small>
       </div>
@@ -142,6 +149,13 @@
         </div>
       </div>
       <div class="header-actions">
+        <button id="chat-share-btn" class="icon-btn share-btn" title="Share room code" type="button">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </button>
         <button id="notify-btn" class="icon-btn" title="Enable notifications" type="button">
           <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6V11a7 7 0 0 0-5-6.71V4a2 2 0 1 0-4 0v.29A7 7 0 0 0 5 11v5l-2 2v1h18v-1z"/></svg>
         </button>
@@ -289,6 +303,6 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260525b" type="module"></script>
+  <script src="app.js?v=20260526c" type="module"></script>
 </body>
 </html>
