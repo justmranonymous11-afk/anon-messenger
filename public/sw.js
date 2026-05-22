@@ -28,7 +28,7 @@ self.addEventListener('push', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const room = e.notification.data && e.notification.data.room;
-  const url = room ? `/#${room}` : '/';
+  const url = room ? `/app#${room}` : '/app';
   e.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of all) {
@@ -39,5 +39,9 @@ self.addEventListener('notificationclick', (e) => {
       }
     }
     if (self.clients.openWindow) await self.clients.openWindow(url);
+    // Also try navigating an existing client to the room
+    for (const c of all) {
+      if ('navigate' in c) { await c.navigate(url); return; }
+    }
   })());
 });

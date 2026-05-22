@@ -703,6 +703,7 @@ function handleConnection(ws) {
         if (room.peers.size > 0 && requestedMode !== room.mode) {
           safeSend(ws, {
             type: 'error',
+            code: 'room_mode_mismatch',
             error: room.mode === 'group'
               ? 'This room is already a group — pick Group on the home screen, or use a new code.'
               : 'This room is 1-on-1 only — pick "Just us", or use a new code for a group.',
@@ -713,9 +714,10 @@ function handleConnection(ws) {
         if (room.peers.size >= cap) {
           safeSend(ws, {
             type: 'error',
+            code: 'room_full',
             error: room.mode === 'group'
-              ? `Group room is full (max ${cap} users)`
-              : `Private room is full (already has 2 people)`,
+              ? `This group is full (${cap}/${cap} people connected). Wait for someone to leave or use a new room code.`
+              : 'This 1-on-1 room is taken — two people are already connected. Use another code or ask them to leave first.',
           });
           return;
         }

@@ -7,7 +7,7 @@
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#00C2A8" />
-  <link rel="stylesheet" href="styles.css?v=20260526c" />
+  <link rel="stylesheet" href="styles.css?v=20260527b" />
   <!-- Custom hex-shield favicon (NOT Telegram-style) -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
 </head>
@@ -109,6 +109,7 @@
           </button>
         </div>
         <small id="room-hint">Share this code with the other person. Both must enter it.</small>
+        <p id="room-error" class="room-error hidden" role="alert"></p>
       </div>
 
       <div class="field">
@@ -198,6 +199,14 @@
       <button id="recording-cancel" class="rec-cancel">Cancel</button>
       <button id="recording-stop" class="rec-stop">Send</button>
     </div>
+
+    <!-- Scroll-to-bottom button — appears when user scrolls up -->
+    <button id="scroll-btn" class="scroll-btn hidden" type="button" aria-label="Scroll to latest messages">
+      <span id="scroll-count" class="scroll-count hidden" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14M5 12l7 7 7-7"/>
+      </svg>
+    </button>
 
     <form id="composer" class="composer" autocomplete="off">
       <button id="sticker-btn" type="button" class="icon-btn composer-icon" title="Stickers" disabled>
@@ -303,6 +312,6 @@
   <!-- ============ TOAST ============ -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260526c" type="module"></script>
+  <script src="app.js?v=20260527b" type="module"></script>
 </body>
 </html>

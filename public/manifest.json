@@ -2,7 +2,7 @@
   "name": "Anon Messenger",
   "short_name": "Anon",
   "description": "Anonymous end-to-end encrypted messenger",
-  "start_url": "/",
+  "start_url": "/app",
   "display": "standalone",
   "background_color": "#0B141A",
   "theme_color": "#00C2A8",

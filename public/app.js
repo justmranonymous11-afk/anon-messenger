@@ -63,6 +63,40 @@
     toast._t = setTimeout(() => t.classList.add('hidden'), ms);
   };
 
+  // Smart scroll — only jump to bottom if user was already near bottom
+  let unreadScrollCount = 0;
+
+  function isNearBottom(el, threshold = 120) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }
+
+  function smartScroll(force = false) {
+    const wrap = $('messages');
+    if (!wrap) return;
+    if (force || isNearBottom(wrap)) {
+      wrap.scrollTop = wrap.scrollHeight;
+      unreadScrollCount = 0;
+      updateScrollBtn();
+    } else {
+      unreadScrollCount++;
+      updateScrollBtn();
+    }
+  }
+
+  function updateScrollBtn() {
+    const btn = $('scroll-btn');
+    if (!btn) return;
+    const wrap = $('messages');
+    const atBottom = !wrap || isNearBottom(wrap);
+    btn.classList.toggle('hidden', atBottom);
+    const cnt = $('scroll-count');
+    if (cnt) {
+      const n = unreadScrollCount;
+      cnt.textContent = n > 99 ? '99+' : n > 0 ? String(n) : '';
+      cnt.classList.toggle('hidden', n === 0);
+    }
+  }
+
   // Share an invite link (room code) — Web Share API on mobile, clipboard fallback
   async function shareInvite(code) {
     if (!code || !/^[A-Z0-9]{4,12}$/.test(code)) return;
@@ -120,6 +154,7 @@
     pushEnabled: false,
   };
   let joinedWaiters = [];
+  let joinOutcomeWaiters = [];
 
   function newPeer(id) {
     return {
@@ -224,6 +259,61 @@
     w.forEach((fn) => fn());
   }
 
+  function waitForJoinOutcome(ms = 15000) {
+    if (joinedReady && state.myId) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Could not join — check your connection and try again.')), ms);
+      joinOutcomeWaiters.push({
+        resolve: () => { clearTimeout(t); resolve(); },
+        reject: (err) => { clearTimeout(t); reject(new Error(err || 'Could not join room')); },
+      });
+    });
+  }
+
+  function resolveJoinOutcome() {
+    joinOutcomeWaiters.splice(0).forEach((w) => w.resolve());
+  }
+
+  function rejectJoinOutcome(err) {
+    joinOutcomeWaiters.splice(0).forEach((w) => w.reject(err));
+  }
+
+  function setRoomError(text) {
+    const el = $('room-error');
+    if (!el) return;
+    if (!text) {
+      el.textContent = '';
+      el.classList.add('hidden');
+      return;
+    }
+    el.textContent = text;
+    el.classList.remove('hidden');
+  }
+
+  function handleJoinRejected(message) {
+    clearTimeout(state._connectTimeout);
+    const codeKept = $('room-input')?.value || '';
+    const nameKept = $('name-input')?.value || '';
+    const modeKept = selectedMode;
+    if (state.inChat || state.ws) {
+      cleanupAndReturn();
+      if (codeKept) $('room-input').value = codeKept;
+      if (nameKept) $('name-input').value = nameKept;
+      setMode(modeKept);
+    }
+    setRoomError(message);
+    toast(message);
+  }
+
+  function handleServerError(msg) {
+    const text = msg.error || 'Something went wrong';
+    if (!state.myId) {
+      rejectJoinOutcome(text);
+      return;
+    }
+    toast(text);
+  }
+
   function connectSignaling() {
     return new Promise((resolve, reject) => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -282,6 +372,10 @@
   }
 
   async function handleSignal(msg) {
+    if (msg.type === 'error') {
+      handleServerError(msg);
+      return;
+    }
     if (!joinedReady && msg.type !== 'joined') {
       preJoinQueue.push(msg);
       return;
@@ -313,6 +407,7 @@
         updateHeaderForPeers();
         joinedReady = true;
         resolveJoinedWaiters();
+        resolveJoinOutcome();
         updateReconnectBanner();
         const queued = preJoinQueue.splice(0);
         for (const m of queued) await handleSignal(m);
@@ -406,12 +501,6 @@
         break;
       }
 
-      case 'error':
-        toast(msg.error || 'Error');
-        if (!state.myId && state.inChat) {
-          cleanupAndReturn();
-        }
-        break;
     }
   }
 
@@ -1685,7 +1774,7 @@
     }
     attachContextMenu(div);
     wrap.appendChild(div);
-    wrap.scrollTop = wrap.scrollHeight;
+    smartScroll();
     if (direction === 'in' && m.id) queueReadReceipt(m.id);
   }
 
@@ -1743,7 +1832,7 @@
     div.className = 'bubble system';
     div.textContent = text;
     wrap.appendChild(div);
-    wrap.scrollTop = wrap.scrollHeight;
+    smartScroll(true); /* system messages always scroll — they're status, not chat */
   }
 
   function markMessageDeleted(id) {
@@ -2058,7 +2147,11 @@
   // ===========================================================
   // Join flow
   // ===========================================================
-  $('gen-btn').addEventListener('click', () => { $('room-input').value = randCode(6); });
+  $('gen-btn').addEventListener('click', () => {
+    $('room-input').value = randCode(6);
+    setRoomError('');
+  });
+  $('room-input')?.addEventListener('input', () => setRoomError(''));
   $('share-code-btn')?.addEventListener('click', () => {
     shareInvite($('room-input').value.trim().toUpperCase());
   });
@@ -2087,6 +2180,7 @@
   let selectedMode = '1on1';
   function setMode(mode) {
     selectedMode = mode;
+    setRoomError('');
     document.querySelectorAll('.mode-opt').forEach(b => {
       const active = b.dataset.mode === mode;
       b.classList.toggle('active', active);
@@ -2104,39 +2198,54 @@
   });
   setMode('1on1');
 
+  function enterChatScreen(code, mode) {
+    state.inChat = true;
+    showScreen('chat-screen');
+    if (Notification.permission === 'granted') initPushSubscription();
+    $('peer-avatar').textContent = code.charAt(0);
+    $('peer-avatar').style.backgroundImage = '';
+    document.querySelector('.peer-name').textContent =
+      mode === 'group' ? 'Group room' : 'Anonymous peer';
+    applyMyProfile();
+    const intro = mode === 'group'
+      ? `Group room "${code}" — up to 5 people can join.`
+      : `Room "${code}" — private 1-on-1.`;
+    showSystemMessage(intro);
+    setBanner('Verifying secure channel…', 'info');
+    setStatus('connecting…', false);
+    updateModeIndicator();
+    clearTimeout(state._connectTimeout);
+    state._connectTimeout = setTimeout(() => {
+      if (!anyPeerReady()) {
+        setBanner('Still connecting… check both devices use the same room code.', 'warning');
+        toast('Not connected yet — try refreshing both tabs');
+      }
+    }, 25000);
+  }
+
   $('join-btn').addEventListener('click', async () => {
     const code = $('room-input').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4,12}$/.test(code)) { toast('Room code must be 4–12 letters/digits'); return; }
+    setRoomError('');
+    const joinBtn = $('join-btn');
+    joinBtn.disabled = true;
     state.room = code;
     state.roomMode = selectedMode;
     state.myProfile = { name: ($('name-input').value || '').trim().slice(0, 40), av: null };
     location.hash = code;
     try {
       await Promise.all([connectSignaling(), loadIceConfig()]);
+      const outcome = waitForJoinOutcome(15000);
       state.ws.send(JSON.stringify({ type: 'join', room: code, mode: selectedMode }));
-      state.inChat = true;
-      showScreen('chat-screen');
-      if (Notification.permission === 'granted') initPushSubscription();
-      $('peer-avatar').textContent = code.charAt(0);
-      $('peer-avatar').style.backgroundImage = '';
-      document.querySelector('.peer-name').textContent =
-        selectedMode === 'group' ? 'Group room' : 'Anonymous peer';
-      applyMyProfile();
-      const intro = selectedMode === 'group'
-        ? `Group room "${code}" — up to 5 people can join.`
-        : `Room "${code}" — private 1-on-1.`;
-      showSystemMessage(intro);
-      setBanner('Verifying secure channel…', 'info');
-      setStatus('connecting…', false);
-      updateModeIndicator();
-      clearTimeout(state._connectTimeout);
-      state._connectTimeout = setTimeout(() => {
-        if (!anyPeerReady()) {
-          setBanner('Still connecting… check both devices use the same room code.', 'warning');
-          toast('Not connected yet — try refreshing both tabs');
-        }
-      }, 25000);
-    } catch { toast('Could not reach server'); }
+      await outcome;
+      enterChatScreen(code, selectedMode);
+    } catch (e) {
+      const msg = e?.message || 'Could not join room';
+      if (!state.myId) handleJoinRejected(msg);
+      else toast(msg);
+    } finally {
+      joinBtn.disabled = false;
+    }
   });
 
   function updateModeIndicator() {
@@ -2161,6 +2270,19 @@
   });
 
   $('reconnect-btn')?.addEventListener('click', () => reconnectSession());
+
+  // Scroll-to-bottom button
+  $('messages').addEventListener('scroll', () => {
+    if (isNearBottom($('messages'))) unreadScrollCount = 0;
+    updateScrollBtn();
+  }, { passive: true });
+  $('scroll-btn')?.addEventListener('click', () => {
+    const wrap = $('messages');
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: 'smooth' });
+    unreadScrollCount = 0;
+    updateScrollBtn();
+  });
+
   $('preview-close')?.addEventListener('click', closeFilePreview);
   $('preview-overlay')?.addEventListener('click', (e) => {
     if (e.target.id === 'preview-overlay') closeFilePreview();
@@ -2201,7 +2323,9 @@
     teardownCall();
     joinedReady = false;
     preJoinQueue.length = 0;
+    joinOutcomeWaiters.length = 0;
     signalInbox = Promise.resolve();
+    setRoomError('');
     clearTimeout(state._connectTimeout);
     Object.assign(state, {
       ws: null, myId: null, room: null,
