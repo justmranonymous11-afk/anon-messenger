@@ -4,8 +4,8 @@
   "description": "Anonymous end-to-end encrypted messenger",
   "start_url": "/app",
   "display": "standalone",
-  "background_color": "#0B141A",
-  "theme_color": "#00C2A8",
+  "background_color": "#0A0614",
+  "theme_color": "#0A0614",
   "icons": [
     {
       "src": "/icon-192.svg",

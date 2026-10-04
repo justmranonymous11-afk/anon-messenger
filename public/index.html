@@ -6,46 +6,44 @@
   <meta name="referrer" content="no-referrer" />
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
-  <meta name="theme-color" content="#00C2A8" />
-  <link rel="stylesheet" href="styles.css?v=20260527c" />
-  <!-- Custom hex-shield favicon (NOT Telegram-style) -->
-  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><polygon points='32,4 56,18 56,46 32,60 8,46 8,18' fill='%2300C2A8'/><path d='M28 22a8 8 0 0 1 8 8c0 3-1.6 5.6-4 7v9h-8v-3h-3v-3h3v-3a8 8 0 0 1 4-15zm4 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0z' fill='white'/></svg>" />
+  <meta name="theme-color" content="#0A0614" />
+  <link rel="preload" href="/fonts/unbounded.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="styles.css?v=20261004a" />
+  <!-- Redacted-bubble favicon -->
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%238B5CFF'/><stop offset='.55' stop-color='%23FF4FA3'/><stop offset='1' stop-color='%23FF9147'/></linearGradient></defs><path d='M20 6h24a14 14 0 0 1 14 14v12a14 14 0 0 1-14 14H28L15 57V45.2A14 14 0 0 1 6 32V20A14 14 0 0 1 20 6z' fill='url(%23g)'/><rect x='15' y='17' width='34' height='8' rx='2' fill='%230A0614'/><rect x='15' y='29' width='21' height='6' rx='3' fill='white'/></svg>" />
 </head>
 <body>
+  <!-- Reusable logo mark: a speech bubble with a redaction bar -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="anon-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#8B5CFF"/>
+        <stop offset=".55" stop-color="#FF4FA3"/>
+        <stop offset="1" stop-color="#FF9147"/>
+      </linearGradient>
+      <symbol id="anon-mark" viewBox="0 0 64 64">
+        <path d="M20 6h24a14 14 0 0 1 14 14v12a14 14 0 0 1-14 14H28L15 57V45.2A14 14 0 0 1 6 32V20A14 14 0 0 1 20 6z" fill="url(#anon-grad)"/>
+        <rect x="15" y="17" width="34" height="8" rx="2" fill="#0A0614"/>
+        <rect x="15" y="29" width="21" height="6" rx="3" fill="#fff" fill-opacity=".92"/>
+        <circle cx="43" cy="32" r="3" fill="#C6FF4A"/>
+      </symbol>
+    </defs>
+  </svg>
+
   <!-- ============ JOIN SCREEN ============ -->
   <section id="join-screen" class="screen active">
     <div class="join-card">
       <div class="logo">
-        <!-- Hexagonal shield with a key emblem — original design, no resemblance to Telegram. -->
-        <svg viewBox="0 0 96 96" width="88" height="88" aria-hidden="true">
-          <defs>
-            <linearGradient id="g-hex" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#22E5C4"/>
-              <stop offset="1" stop-color="#00A38C"/>
-            </linearGradient>
-            <linearGradient id="g-hex-stroke" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#7CFFE9" stop-opacity=".8"/>
-              <stop offset="1" stop-color="#00C2A8" stop-opacity=".2"/>
-            </linearGradient>
-          </defs>
-          <polygon points="48,4 86,26 86,70 48,92 10,70 10,26" fill="url(#g-hex)" stroke="url(#g-hex-stroke)" stroke-width="2"/>
-          <polygon points="48,14 78,31 78,65 48,82 18,65 18,31" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1.5"/>
-          <!-- Key icon -->
-          <g fill="white">
-            <circle cx="40" cy="40" r="11" fill="none" stroke="white" stroke-width="5"/>
-            <rect x="46" y="42" width="22" height="6" rx="1.2"/>
-            <rect x="58" y="48" width="6" height="8" rx="1.2"/>
-            <rect x="50" y="48" width="4" height="6" rx="1"/>
-          </g>
-        </svg>
+        <svg width="80" height="80" aria-hidden="true"><use href="#anon-mark"/></svg>
       </div>
-      <h1>Anon Messenger</h1>
-      <p class="tagline">End-to-end encrypted chat &amp; calls. No accounts. No logs.</p>
+      <h1>ANON</h1>
+      <p class="tagline"><strong>Say anything. Leave no trace.</strong><br>End-to-end encrypted chat &amp; calls.</p>
       <div class="join-pills">
         <span class="join-pill">
           <svg class="pill-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
             <rect x="2.5" y="8" width="11" height="7.2" rx="1.5"
-                  fill="rgba(34,229,196,0.18)" stroke="currentColor" stroke-width="1.35"/>
+                  fill="currentColor" fill-opacity=".18" stroke="currentColor" stroke-width="1.35"/>
             <circle cx="8" cy="11" r="1.2" fill="currentColor"/>
             <g class="pil-shk">
               <path d="M5 8V5.5a3 3 0 0 1 6 0V8"
@@ -57,7 +55,7 @@
         <span class="join-pill">
           <svg class="pill-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
             <circle cx="8" cy="5.5" r="2.8"
-                    fill="rgba(34,229,196,0.18)" stroke="currentColor" stroke-width="1.35"/>
+                    fill="currentColor" fill-opacity=".18" stroke="currentColor" stroke-width="1.35"/>
             <path d="M2 14.5c0-3.3 2.7-6 6-6s6 2.7 6 6"
                   stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
             <line class="pil-sla" x1="2" y1="2" x2="14" y2="14"
@@ -69,7 +67,7 @@
         <span class="join-pill">
           <svg class="pill-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
             <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5-7-5-7-5z"
-                  stroke="currentColor" stroke-width="1.35" fill="rgba(34,229,196,0.18)"/>
+                  stroke="currentColor" stroke-width="1.35" fill="currentColor" fill-opacity=".18"/>
             <circle cx="8" cy="8" r="1.8" fill="currentColor"/>
             <line class="pil-sla" x1="2" y1="2" x2="14" y2="14"
                   stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
@@ -99,8 +97,12 @@
         <label for="room-input">Room code</label>
         <div class="room-row">
           <input id="room-input" type="text" maxlength="12" autocomplete="off" spellcheck="false" placeholder="e.g. K7P2QX" />
-          <button id="gen-btn" type="button" title="Generate new code">↻</button>
-          <button id="share-code-btn" type="button" title="Share invite link">
+          <button id="gen-btn" type="button" title="Generate new code" aria-label="Generate new code">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>
+            </svg>
+          </button>
+          <button id="share-code-btn" type="button" title="Share invite link" aria-label="Share invite link">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
               <polyline points="16 6 12 2 8 6"/>
@@ -119,8 +121,8 @@
       </div>
 
       <button id="join-btn" class="primary">
-        <svg viewBox="0 0 24 24" width="18" height="18" style="vertical-align:-3px;margin-right:8px;"><path fill="currentColor" d="M11 19h8v2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14v2h-8v14zm5-7l-5-5v3H6v4h5v3l5-5z"/></svg>
         Enter room
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="margin-left:10px;" aria-hidden="true"><path d="M4 10h12M11 4l6 6-6 6"/></svg>
       </button>
 
       <details class="security-note">
@@ -138,7 +140,9 @@
   <!-- ============ CHAT SCREEN ============ -->
   <section id="chat-screen" class="screen">
     <header class="chat-header">
-      <button id="back-btn" class="icon-btn" title="Leave room">←</button>
+      <button id="back-btn" class="icon-btn" title="Leave room" aria-label="Leave room">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
       <div class="peer-info">
         <div class="avatar" id="peer-avatar">?</div>
         <div class="peer-meta">
@@ -320,25 +324,7 @@
     </div>
     <div class="ls-content">
       <div class="ls-logo">
-        <svg viewBox="0 0 96 96" width="76" height="76" aria-hidden="true">
-          <defs>
-            <linearGradient id="ls-g1" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#22E5C4"/><stop offset="1" stop-color="#00A38C"/>
-            </linearGradient>
-            <linearGradient id="ls-g2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#7CFFE9" stop-opacity=".8"/>
-              <stop offset="1" stop-color="#00C2A8" stop-opacity=".2"/>
-            </linearGradient>
-          </defs>
-          <polygon points="48,4 86,26 86,70 48,92 10,70 10,26" fill="url(#ls-g1)" stroke="url(#ls-g2)" stroke-width="2"/>
-          <polygon points="48,14 78,31 78,65 48,82 18,65 18,31" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.5"/>
-          <g fill="white">
-            <circle cx="40" cy="40" r="11" fill="none" stroke="white" stroke-width="5"/>
-            <rect x="46" y="42" width="22" height="6" rx="1.2"/>
-            <rect x="58" y="48" width="6" height="8" rx="1.2"/>
-            <rect x="50" y="48" width="4" height="6" rx="1"/>
-          </g>
-        </svg>
+        <svg width="76" height="76" aria-hidden="true"><use href="#anon-mark"/></svg>
       </div>
       <div class="ls-wordmark">ANON</div>
       <div class="ls-track"><div id="ls-bar" class="ls-bar"></div></div>
@@ -352,8 +338,8 @@
       <div class="safety-icon" aria-hidden="true">
         <svg viewBox="0 0 32 32" width="38" height="38" fill="none">
           <path d="M16 3L4 8v9c0 6.6 5.1 12.8 12 14.5C22.9 29.8 28 23.6 28 17V8L16 3z"
-                fill="rgba(34,229,196,0.12)" stroke="#22E5C4" stroke-width="1.8"/>
-          <path d="M11 16l3.5 3.5L21 12" stroke="#22E5C4" stroke-width="2"
+                fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M11 16l3.5 3.5L21 12" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </div>
@@ -365,6 +351,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20260527c" type="module"></script>
+  <script src="app.js?v=20261004a" type="module"></script>
 </body>
 </html>
