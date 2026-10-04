@@ -10,6 +10,8 @@ An anonymous, end-to-end encrypted messenger with **text chat** and **audio/vide
 - **Zero-knowledge server**: the Node.js signaling server only relays opaque WebRTC handshake payloads. It cannot decrypt messages or media.
 - **No persistence**: rooms only live in server memory while the two peers are connected. Messages live only in the browser tab and are wiped on disconnect.
 - **Safety number**: both peers see the same 24-digit safety number derived from the shared secret, so they can verbally verify they aren't being MITM'd.
+- **Replies, quotes & edits**: swipe right, hover, or long-press a message to reply; edit your own messages (or press ↑ in an empty composer). Quoted snippets travel encrypted, and a peer can only edit messages they sent.
+- **Colour themes**: Neon, Ocean, Sunset, Toxic, Candy and Ghost, picked on the join screen or in your profile. Only the theme name is kept in the browser (`localStorage`); no messages or identities are ever stored.
 
 ## Run it
 
@@ -66,7 +68,8 @@ anon-messenger/
     ├── index.html       # App shell served at /app
     ├── styles.css       # App theme (violet / pink / orange + lime accents)
     ├── app.js           # WebRTC + ECDH + AES-GCM client logic
-    └── fonts/           # Self-hosted OFL fonts (no third-party requests)
+    ├── fonts/           # Self-hosted OFL fonts (no third-party requests)
+    └── *.png            # App icons (regenerate with `node scripts/make-icons.js`)
 ```
 
 ## Notes
