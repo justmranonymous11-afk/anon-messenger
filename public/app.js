@@ -34,6 +34,9 @@
 
   // ---------- Tiny helpers ----------
   const $ = (id) => document.getElementById(id);
+  // The Notification API doesn't exist on iOS Safari (outside home-screen apps)
+  // or in most in-app browsers — never touch it directly.
+  const notifPermission = () => ('Notification' in window ? Notification.permission : 'unsupported');
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const buf2b64 = (buf) => {
@@ -1030,7 +1033,7 @@
             const plain = await decryptText(peer.sessionKey, msg.p);
             const obj = JSON.parse(plain);
             const prevName = peer.profile.name;
-            peer.profile = { name: String(obj.name || '').slice(0, 40), av: obj.av || null };
+            peer.profile = { name: String(obj.name || '').slice(0, 40), av: safeAvatar(obj.av) };
             updateHeaderForPeers();
             // Subtle system message when a peer renames mid-session (excluding
             // the initial profile send which would spam on every join).
@@ -1312,7 +1315,7 @@
 
   async function initPushSubscription() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    if (Notification.permission === 'denied') return;
+    if (notifPermission() !== 'granted' && notifPermission() !== 'default') return;
     try {
       const reg = await navigator.serviceWorker.register('/sw.js');
       const res = await fetch('/api/push-vapid');
@@ -1320,7 +1323,7 @@
       if (!enabled || !publicKey) return;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
-        if (Notification.permission === 'default') return;
+        if (notifPermission() !== 'granted') return;
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey),
@@ -1353,11 +1356,11 @@
 
   function notifyIncoming(peer, summary) {
     const name = (peer && peer.profile && peer.profile.name || '').trim() || 'Someone';
-    if (document.hidden && Notification.permission === 'granted') {
+    if (document.hidden && notifPermission() === 'granted') {
       try {
         const n = new Notification(name, {
           body: summary,
-          icon: '/icon-192.svg',
+          icon: '/icon-192.png',
           tag: state.room ? `room-${state.room}` : 'anon',
         });
         n.onclick = () => { window.focus(); n.close(); };
@@ -1511,7 +1514,7 @@
     const count = peerCount();
 
     if (count === 0) {
-      if (nameEl) nameEl.textContent = 'Waiting for peers…';
+      if (nameEl) nameEl.textContent = state.room ? `Room ${state.room}` : 'Waiting for peers…';
       if (avEl) {
         avEl.style.backgroundImage = '';
         avEl.textContent = '?';
@@ -1690,7 +1693,30 @@
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     $(id).classList.add('active');
+    syncViewport();
   }
+
+  // ---- Fit the app to the *visible* viewport (mobile keyboards, URL bars) ----
+  // Without this, iOS slides the whole page up under the keyboard and the
+  // header/composer end up off-screen.
+  function syncViewport() {
+    const vv = window.visualViewport;
+    if (vv && vv.scale > 1.01) return;          // user is pinch-zooming; leave layout alone
+    const root = document.documentElement.style;
+    const wrap = $('messages');
+    const pinned = wrap && isNearBottom(wrap);
+    root.setProperty('--app-h', `${Math.round(vv ? vv.height : window.innerHeight)}px`);
+    root.setProperty('--app-top', `${Math.round(vv ? vv.offsetTop : 0)}px`);
+    if (pinned) requestAnimationFrame(() => { wrap.scrollTop = wrap.scrollHeight; });
+  }
+  window.visualViewport?.addEventListener('resize', syncViewport);
+  window.visualViewport?.addEventListener('scroll', syncViewport);
+  window.addEventListener('resize', syncViewport);
+  window.addEventListener('orientationchange', () => setTimeout(syncViewport, 250));
+  syncViewport();
+
+  // No notification support (iOS Safari tab, in-app browsers): hide the bell to free header space.
+  if (!('Notification' in window)) $('notify-btn')?.classList.add('hidden');
   function setStatus(text, online) {
     const el = $('peer-status');
     if (!el) return;
@@ -2208,6 +2234,27 @@
   }
 
   // Decrypt and sanity-check a peer's reply reference.
+  // Only accept inline image data as an avatar. A URL would make our browser
+  // fetch from the peer's server and leak our IP address.
+  function safeAvatar(av) {
+    return (typeof av === 'string' && av.length < 300000
+      && /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(av)) ? av : null;
+  }
+
+  function paintAvatar(el, peer) {
+    if (!el) return;
+    const name = (peer?.profile.name || '').trim();
+    if (peer?.profile.av) {
+      el.style.backgroundImage = `url("${peer.profile.av}")`;
+      el.style.backgroundSize = 'cover';
+      el.style.backgroundPosition = 'center';
+      el.textContent = '';
+    } else {
+      el.style.backgroundImage = '';
+      el.textContent = (name[0] || '?').toUpperCase();
+    }
+  }
+
   async function decodeReplyRef(peer, rp) {
     try {
       const r = JSON.parse(await decryptText(peer.sessionKey, rp));
@@ -2358,17 +2405,26 @@
     });
     // Long-press for touch devices; double-tap to ❤️
     let pressTimer = null;
+    let longPressed = false;
     bubble.addEventListener('touchstart', (e) => {
       const t0 = e.touches[0];
-      sx = t0.clientX; sy = t0.clientY; dx = 0; swiping = false;
+      sx = t0.clientX; sy = t0.clientY; dx = 0; swiping = false; longPressed = false;
       bubble.style.transition = '';
       pressTimer = setTimeout(() => {
-        const t = e.touches[0];
-        openCtxMenu(bubble, t.clientX, t.clientY);
-      }, 500);
+        if (swiping) return;
+        longPressed = true;
+        navigator.vibrate?.(8);   // tiny haptic tick where supported (Android)
+        openCtxMenu(bubble, sx, sy);
+      }, 450);
     }, { passive: true });
     bubble.addEventListener('touchend', (e) => {
       clearTimeout(pressTimer);
+      if (longPressed) {
+        // Lifting the finger after a long-press must not "click" the menu shut.
+        longPressed = false;
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
       if (swiping) {
         swiping = false;
         bubble.style.transition = 'transform .2s cubic-bezier(.2,.9,.3,1.2)';
@@ -2399,7 +2455,9 @@
     }, { passive: true });
   }
 
+  let ctxOpenedAt = 0;
   function openCtxMenu(el, x, y) {
+    ctxOpenedAt = Date.now();
     ctxTargetEl = el;
     const mine = el.classList.contains('out');
     const isText = el.dataset.kind === 'text';
@@ -2419,6 +2477,7 @@
   }
   function closeCtxMenu() { ctxMenu.classList.add('hidden'); ctxTargetEl = null; }
   document.addEventListener('click', (e) => {
+    if (Date.now() - ctxOpenedAt < 450) return;   // the click that ends a long-press
     if (!ctxMenu.contains(e.target)) closeCtxMenu();
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtxMenu(); });
@@ -2737,7 +2796,7 @@
   function enterChatScreen(code, mode) {
     state.inChat = true;
     showScreen('chat-screen');
-    if (Notification.permission === 'granted') initPushSubscription();
+    if (notifPermission() === 'granted') initPushSubscription();
     $('peer-avatar').textContent = code.charAt(0);
     $('peer-avatar').style.backgroundImage = '';
     document.querySelector('.peer-name').textContent =
@@ -2756,6 +2815,7 @@
       _loadFallback = setTimeout(fadeOutLoading, 600);
       updateWaitingCard();
       setStatus('waiting', false);
+      document.querySelector('.peer-name').textContent = `Room ${code}`;
       setBanner('Room open — share the code to start an encrypted chat', 'info');
     }
     clearTimeout(state._connectTimeout);
@@ -2767,9 +2827,23 @@
     }, 25000);
   }
 
+  ['room-input', 'name-input'].forEach(id => {
+    $(id)?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      e.target.blur();               // drop the keyboard before the screen changes
+      $('join-btn').click();
+    });
+  });
+
   $('join-btn').addEventListener('click', async () => {
     const code = $('room-input').value.trim().toUpperCase();
     if (!/^[A-Z0-9]{4,12}$/.test(code)) { toast('Room code must be 4–12 letters/digits'); return; }
+    if (!window.isSecureContext || !(window.crypto && crypto.subtle)) {
+      // Browsers only expose Web Crypto on https:// (or localhost) — encryption can't start without it.
+      setRoomError('Encryption needs a secure connection. Open this page with https:// (or on localhost) and try again.');
+      return;
+    }
     setRoomError('');
     const joinBtn = $('join-btn');
     joinBtn.disabled = true;
@@ -3142,6 +3216,8 @@
   }
 
   function showCallOverlay(status) {
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    document.querySelector('.call-peer').textContent = (peer?.profile.name || '').trim() || 'Anonymous peer';
     $('call-overlay').classList.remove('hidden');
     $('call-status').textContent = status;
     state.remoteSharingScreen = false;
@@ -3158,8 +3234,13 @@
 
   function showIncomingCall(type) {
     state.callType = type;
+    const peer = state.callPeerId && getPeer(state.callPeerId);
+    document.querySelector('#incoming-call .incoming-name').textContent =
+      (peer?.profile.name || '').trim() || 'Anonymous peer';
+    paintAvatar(document.querySelector('#incoming-call .avatar'), peer);
     $('incoming-type').textContent = type === 'video' ? 'Incoming video call' : 'Incoming audio call';
     $('incoming-call').classList.remove('hidden');
+    navigator.vibrate?.([200, 120, 200]);
   }
 
   $('accept-btn').addEventListener('click', async () => {

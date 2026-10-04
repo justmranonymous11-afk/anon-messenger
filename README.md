@@ -38,7 +38,7 @@ The signaling server only needs to be reachable by both peers. The simplest way:
 - Run `npm start` on a small VPS, behind HTTPS (use Caddy/Traefik/nginx for TLS). The client auto-uses `wss://` when served over HTTPS.
 - WebRTC needs **STUN** (already configured — Google's public STUN). For peers behind strict NATs, add a **TURN** server (e.g. Coturn) to the `iceServers` array in `public/app.js`.
 
-> HTTPS is required for `getUserMedia` (mic/camera) to work on non-localhost origins. Localhost is exempt for development.
+> HTTPS is required on anything other than `localhost`: browsers only provide the Web Crypto API (needed to join a room) and mic/camera access on secure origins. Opening the app on a phone via `http://<your-LAN-IP>` will show an error asking for https.
 
 ## Threat model & what this does/doesn't protect
 
