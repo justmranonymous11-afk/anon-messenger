@@ -84,16 +84,20 @@
     }
   }
 
+  function fadeOutLoading() {
+    const s = $('loading-screen');
+    if (!s || s.classList.contains('hidden')) return;
+    s.classList.add('fadeout');
+    setTimeout(() => { s.classList.add('hidden'); s.classList.remove('fadeout'); }, 450);
+  }
+
   function hideLoading(delay = 300) {
     clearTimeout(_loadFallback);
+    // Already in the chat (e.g. we were waiting alone) — don't flash the loader back up.
+    if ($('loading-screen')?.classList.contains('hidden')) return;
     setTimeout(() => {
       showLoading('Secure channel established', 100);
-      setTimeout(() => {
-        const s = $('loading-screen');
-        if (!s) return;
-        s.classList.add('fadeout');
-        setTimeout(() => { s.classList.add('hidden'); s.classList.remove('fadeout'); }, 450);
-      }, 350);
+      setTimeout(fadeOutLoading, 350);
     }, delay);
   }
 
@@ -230,6 +234,8 @@
     screenStream: null,
     callType: null,
     callActive: false,
+    remoteStream: null,       // incoming call media; only played once the call is accepted
+    heldTracks: [],           // [sender, track] pairs the caller holds back until accepted
     sharingScreen: false,
     remoteSharingScreen: false,
     callTimerStart: 0,
@@ -492,10 +498,7 @@
         updateModeIndicator();
         const existing = Array.isArray(msg.peers) ? msg.peers : [];
         if (existing.length === 0) {
-          showLoading('Waiting for the other person…', 55, true);
-          showSystemMessage(state.roomMode === 'group'
-            ? 'Group room created. Waiting for others to join…'
-            : 'Waiting for the other person to join…');
+          showLoading('Room ready', 100);
           setStatus('waiting', false);
         } else {
           showLoading('Establishing peer connection…', 65);
@@ -784,14 +787,13 @@
       console.log(`[pc:${peerId}] ontrack kind=${e.track.kind}`);
       // In 1-on-1 calls only (current implementation). Group video = future.
       if (peerCount() > 1) return;
-      const remoteVideo = $('remote-video');
-      if (!remoteVideo.srcObject) remoteVideo.srcObject = new MediaStream();
-      const ms = remoteVideo.srcObject;
+      if (!state.remoteStream) state.remoteStream = new MediaStream();
+      const ms = state.remoteStream;
       ms.getTracks().filter(t => t.kind === e.track.kind).forEach(t => ms.removeTrack(t));
       ms.addTrack(e.track);
-      // Force playback (audio elements with display:none still play audio,
-      // but Safari is picky about autoplay until there's interaction).
-      remoteVideo.play().catch(() => {});
+      // Never play the other side while the call is still ringing — only once
+      // it has been accepted (see attachRemoteMedia).
+      if (state.callActive) attachRemoteMedia();
     };
 
     peer.pc.onnegotiationneeded = async () => {
@@ -1059,12 +1061,14 @@
           if (peer.id !== state.callPeerId) return;
           onCallDeclined();
           return;
-        case 'call-end':
+        case 'call-end': {
           console.log('[call] received call-end from', peer.id);
           if (peer.id !== state.callPeerId) return;
+          const wasActive = state.callActive;
           teardownCall();
-          showSystemMessage('Call ended.');
+          if (wasActive) showSystemMessage('Call ended.');
           return;
+        }
         case 'call-screen':
           if (peer.id !== state.callPeerId) return;
           state.remoteSharingScreen = !!msg.on;
@@ -1500,6 +1504,7 @@
   // - 1 peer (1-on-1): show that peer's avatar + name
   // - 2+ peers (group): show stack of avatars + "Group · N peers"
   function updateHeaderForPeers() {
+    updateWaitingCard();
     const nameEl = document.querySelector('.peer-name');
     const avEl = $('peer-avatar');
     const statusEl = $('peer-status');
@@ -1706,6 +1711,7 @@
       if (p.typingUntil > now) typingPeers.push(p);
       else if (peerAppearsOnline(p)) onlineCount++;
     }
+    updateTypingBubble(typingPeers);
     if (peerCount() === 0) {
       setStatus('waiting', false);
       return;
@@ -1984,7 +1990,17 @@
         </div>`;
     }
     attachContextMenu(div);
-    wrap.appendChild(div);
+    // Group consecutive messages from the same sender (within 3 minutes)
+    div.dataset.ts = String(Date.now());
+    const prev = lastChatNode(wrap);
+    if (prev && prev.classList.contains(direction) && !prev.classList.contains('system')
+        && !prev.classList.contains('deleted')
+        && (prev.dataset.from || '') === (div.dataset.from || '')
+        && Date.now() - Number(prev.dataset.ts || 0) < 180000) {
+      prev.classList.add('grp-next');
+      div.classList.add('grp-prev');
+    }
+    appendToChat(div);
     smartScroll();
     if (direction === 'in' && m.id) queueReadReceipt(m.id);
   }
@@ -2037,13 +2053,102 @@
     });
   }
 
+  // Status lines that supersede each other share a key, so they update in
+  // place instead of stacking up (e.g. relay → direct "secure channel ready").
+  function systemKey(text) {
+    if (/^Secure channel ready/.test(text)) return 'secure';
+    if (/^(Reconnecting|Back online)/.test(text)) return 'reconnect';
+    return text;
+  }
+
   function showSystemMessage(text) {
     const wrap = $('messages');
+    const key = systemKey(text);
+    // Look back through the trailing run of status lines (no chat in between).
+    for (let n = lastChatNode(wrap); n && n.classList.contains('system'); n = prevChatNode(n)) {
+      if (n.dataset.key === key) {
+        n.textContent = text;
+        smartScroll(true);
+        return;
+      }
+    }
     const div = document.createElement('div');
     div.className = 'bubble system';
+    div.dataset.key = key;
     div.textContent = text;
-    wrap.appendChild(div);
+    appendToChat(div);
     smartScroll(true); /* system messages always scroll — they're status, not chat */
+  }
+
+  // The waiting card and typing bubble always sit at the end of the list.
+  const isFloater = (n) => n.classList.contains('waiting-card') || n.classList.contains('typing-bubble');
+  function prevChatNode(n) {
+    let p = n.previousElementSibling;
+    while (p && isFloater(p)) p = p.previousElementSibling;
+    return p;
+  }
+  function lastChatNode(wrap) {
+    let n = wrap.lastElementChild;
+    while (n && isFloater(n)) n = n.previousElementSibling;
+    return n;
+  }
+  function appendToChat(el) {
+    const wrap = $('messages');
+    const floater = wrap.querySelector(':scope > .waiting-card, :scope > .typing-bubble');
+    wrap.insertBefore(el, floater);
+  }
+
+  // ---- "Waiting for someone" card (shown while you're alone in the room) ----
+  function updateWaitingCard() {
+    const wrap = $('messages');
+    let card = wrap.querySelector(':scope > .waiting-card');
+    const alone = state.inChat && peerCount() === 0 && !!state.room;
+    if (!alone) { card?.remove(); return; }
+    if (card) return;
+    card = document.createElement('div');
+    card.className = 'waiting-card';
+    const tiles = Array.from(state.room).map(ch => `<span>${escapeHtml(ch)}</span>`).join('');
+    const group = state.roomMode === 'group';
+    card.innerHTML = `
+      <div class="wc-radar" aria-hidden="true"><i></i><i></i><i></i>
+        <svg width="34" height="34"><use href="#anon-mark"/></svg></div>
+      <div class="wc-title">${group ? 'Waiting for others to join' : 'Waiting for someone to join'}</div>
+      <div class="wc-sub">${group ? 'Up to 4 more people can join with this code.' : 'Send them this code — they enter it on their device.'}</div>
+      <div class="wc-code" aria-label="Room code ${escapeHtml(state.room)}">${tiles}</div>
+      <div class="wc-actions">
+        <button type="button" class="wc-btn wc-share">Share invite</button>
+        <button type="button" class="wc-btn wc-copy">Copy code</button>
+      </div>`;
+    card.querySelector('.wc-share').addEventListener('click', () => shareInvite(state.room));
+    card.querySelector('.wc-copy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(state.room); toast('Room code copied'); }
+      catch { toast('Code: ' + state.room); }
+    });
+    wrap.appendChild(card);
+    smartScroll(true);
+  }
+
+  // ---- In-chat typing bubble ----
+  let typingExpiryTimer = null;
+  function updateTypingBubble(typingPeers) {
+    const wrap = $('messages');
+    let el = wrap.querySelector(':scope > .typing-bubble');
+    clearTimeout(typingExpiryTimer);
+    if (!typingPeers.length) { el?.remove(); return; }
+    // Re-check when the newest typing signal expires, in case "stopped typing" never arrives.
+    const soonest = Math.min(...typingPeers.map(p => p.typingUntil));
+    typingExpiryTimer = setTimeout(updatePresenceUI, Math.max(50, soonest - Date.now() + 50));
+    const label = isGroup()
+      ? typingPeers.map(p => (p.profile.name || '').trim() || 'Someone').slice(0, 2).join(', ')
+      : '';
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'typing-bubble';
+      el.setAttribute('aria-hidden', 'true');
+      wrap.appendChild(el);
+      if (isNearBottom(wrap)) wrap.scrollTop = wrap.scrollHeight;
+    }
+    el.innerHTML = `${label ? `<span class="tb-name">${escapeHtml(label)}</span>` : ''}<span class="tb-dots"><i></i><i></i><i></i></span>`;
   }
 
   function markMessageDeleted(id) {
@@ -2645,6 +2750,14 @@
     setBanner('Verifying secure channel…', 'info');
     setStatus('connecting…', false);
     updateModeIndicator();
+    if (peerCount() === 0) {
+      // Nobody here yet: get the loader out of the way so the invite can be shared right away.
+      clearTimeout(_loadFallback);
+      _loadFallback = setTimeout(fadeOutLoading, 600);
+      updateWaitingCard();
+      setStatus('waiting', false);
+      setBanner('Room open — share the code to start an encrypted chat', 'info');
+    }
     clearTimeout(state._connectTimeout);
     state._connectTimeout = setTimeout(() => {
       if (!anyPeerReady()) {
@@ -2963,8 +3076,8 @@
     state.callType = type;
     state.callPeerId = peer.id;
     try {
-      addLocalTracks(peer);
-      console.log('[call] tracks added, awaiting renegotiation');
+      addLocalTracks(peer, { hold: true });
+      console.log('[call] media lines added (held until accepted), awaiting renegotiation');
     } catch (e) {
       console.error('[call] addLocalTracks failed', e);
       toast('Could not start call (track error)');
@@ -2981,18 +3094,51 @@
     showCallOverlay('Ringing…');
   }
 
-  function addLocalTracks(peer) {
+  // With `hold`, the media lines are negotiated while ringing but no track is
+  // attached to the senders, so nothing leaves this device until the other
+  // side accepts (releaseHeldTracks).
+  function addLocalTracks(peer, { hold = false } = {}) {
     if (!state.localStream || !peer.pc) return;
     const localVideo = $('local-video');
     localVideo.srcObject = state.localStream;
     state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     state.senders = [];
     state.videoSender = null;
+    state.heldTracks = [];
     state.localStream.getTracks().forEach(track => {
-      const sender = peer.pc.addTrack(track, state.localStream);
+      let sender;
+      if (hold) {
+        sender = peer.pc.addTransceiver(track.kind, {
+          direction: 'sendrecv', streams: [state.localStream],
+        }).sender;
+        state.heldTracks.push([sender, track]);
+      } else {
+        sender = peer.pc.addTrack(track, state.localStream);
+      }
       state.senders.push(sender);
       if (track.kind === 'video') state.videoSender = sender;
     });
+  }
+
+  async function releaseHeldTracks() {
+    const held = state.heldTracks;
+    state.heldTracks = [];
+    await Promise.all(held.map(([sender, track]) =>
+      sender.replaceTrack(track).catch(e => console.warn('[call] replaceTrack failed', e))));
+  }
+
+  // Start playing the other side's audio/video. Only called once a call is active.
+  function attachRemoteMedia() {
+    const rv = $('remote-video');
+    if (!rv || !state.remoteStream) return;
+    if (rv.srcObject !== state.remoteStream) rv.srcObject = state.remoteStream;
+    rv.play().catch(() => {});
+  }
+
+  function dropRemoteMedia() {
+    state.remoteStream = null;
+    const rv = $('remote-video');
+    if (rv) rv.srcObject = null;
   }
 
   function showCallOverlay(status) {
@@ -3027,6 +3173,7 @@
     showCallOverlay('Connected');
     startCallTimer();
     state.callActive = true;
+    attachRemoteMedia();
   });
 
   $('decline-btn').addEventListener('click', () => {
@@ -3035,12 +3182,16 @@
     if (peer) dcSendTo(peer, { t: 'call-decline' });
     state.callType = null;
     state.callPeerId = null;
+    dropRemoteMedia();
   });
 
   function onCallAccepted() {
+    if (state.callActive || !state.localStream) return;
     $('call-status').textContent = 'Connected';
     startCallTimer();
     state.callActive = true;
+    releaseHeldTracks();
+    attachRemoteMedia();
   }
   function onCallDeclined() { toast('Call declined'); teardownCall(); }
 
@@ -3056,6 +3207,9 @@
   }
 
   function teardownCall() {
+    const wasRinging = !$('incoming-call').classList.contains('hidden');
+    $('incoming-call').classList.add('hidden');
+    if (wasRinging) showSystemMessage('Missed call.');
     stopScreenShare(false);
     clearInterval(state.callTimerInt);
     state.callTimerInt = null;
@@ -3072,9 +3226,10 @@
     }
     state.senders = [];
     state.videoSender = null;
+    state.heldTracks = [];
     state.callPeerId = null;
     const lv = $('local-video'); lv.srcObject = null;
-    const rv = $('remote-video'); rv.srcObject = null;
+    dropRemoteMedia();
     hideCallOverlay();
   }
 

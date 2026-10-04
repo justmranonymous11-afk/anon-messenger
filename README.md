@@ -5,7 +5,7 @@ An anonymous, end-to-end encrypted messenger with **text chat** and **audio/vide
 ## Features
 
 - **Text chat** over WebRTC `DataChannel`, with every message also wrapped in **AES-GCM 256** using a key derived from **ECDH P-256 → HKDF/SHA-256** between the two peers.
-- **Audio & video calls** over WebRTC, natively encrypted by the browser with **DTLS-SRTP**.
+- **Audio & video calls** over WebRTC, natively encrypted by the browser with **DTLS-SRTP**. Nothing from your mic or camera is sent until the other person accepts, and an incoming call is never played before you answer.
 - **Anonymous by design**: no signup, no phone number, no email. Just a 6-character room code.
 - **Zero-knowledge server**: the Node.js signaling server only relays opaque WebRTC handshake payloads. It cannot decrypt messages or media.
 - **No persistence**: rooms only live in server memory while the two peers are connected. Messages live only in the browser tab and are wiped on disconnect.
