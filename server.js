@@ -350,6 +350,8 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 // =================================================================
@@ -420,7 +422,8 @@ const httpServer = http.createServer(async (req, res) => {
         const ext = path.extname(p).toLowerCase();
         res.writeHead(200, {
           'Content-Type': MIME[ext] || 'application/octet-stream',
-          'Cache-Control': 'no-store',
+          // Fonts never change in place, so let the browser keep them.
+          'Cache-Control': ext === '.woff2' ? 'public, max-age=31536000, immutable' : 'no-store',
           'X-Content-Type-Options': 'nosniff',
           'Referrer-Policy': 'no-referrer',
         });

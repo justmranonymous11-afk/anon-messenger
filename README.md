@@ -1,6 +1,6 @@
 # Anon Messenger
 
-An anonymous, end-to-end encrypted messenger with **text chat** and **audio/video calls** between two users. Telegram-style dark UI, no accounts, no logs, no persistence.
+An anonymous, end-to-end encrypted messenger with **text chat** and **audio/video calls** between two users. Vibrant neon-on-ink UI, no accounts, no logs, no persistence.
 
 ## Features
 
@@ -60,9 +60,13 @@ anon-messenger/
 ├── server.js            # Minimal Node.js signaling server (WebSocket + static files)
 ├── README.md
 └── public/
-    ├── index.html       # UI shell
-    ├── styles.css       # Telegram-style dark theme
-    └── app.js           # WebRTC + ECDH + AES-GCM client logic
+    ├── landing.html     # Marketing page served at /
+    ├── landing.css      # Landing page styles
+    ├── landing.js       # Landing page motion (demo chat, scroll reveal)
+    ├── index.html       # App shell served at /app
+    ├── styles.css       # App theme (violet / pink / orange + lime accents)
+    ├── app.js           # WebRTC + ECDH + AES-GCM client logic
+    └── fonts/           # Self-hosted OFL fonts (no third-party requests)
 ```
 
 ## Notes

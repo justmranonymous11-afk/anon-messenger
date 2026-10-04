@@ -1771,7 +1771,7 @@
   }
   function linkify(s) {
     return s.replace(/(https?:\/\/[^\s<]+)/g,
-      '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#22E5C4;">$1</a>');
+      '<a href="$1" class="msg-link" target="_blank" rel="noopener noreferrer">$1</a>');
   }
 
   // Basic markdown applied AFTER escapeHtml — only safe tags produced
@@ -1782,6 +1782,13 @@
       .replace(/\*\*(.+?)\*\*/gs, '<strong>$1</strong>')             // **bold**
       .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')                      // *italic*
       .replace(/~~(.+?)~~/gs, '<s>$1</s>');                          // ~~strikethrough~~
+  }
+
+  // Stable per-name hue so each group member gets their own colour.
+  function senderHue(name) {
+    let h = 0;
+    for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return h % 360;
   }
 
   function bubbleMetaHtml(direction) {
@@ -1803,7 +1810,7 @@
     let senderHeader = '';
     if (direction === 'in' && isGroup() && peerCount() >= 1 && m.from) {
       const name = (m.from.profile.name || '').trim() || 'Anonymous';
-      senderHeader = `<div class="sender">${escapeHtml(name)}</div>`;
+      senderHeader = `<div class="sender" style="--h:${senderHue(name)}">${escapeHtml(name)}</div>`;
     }
     if (m.kind === 'text') {
       div.dataset.text = m.text;
