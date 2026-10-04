@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="referrer" content="no-referrer" />
   <title>Anon — Secure Messenger</title>
   <link rel="manifest" href="/manifest.json" />
@@ -13,7 +13,7 @@
     // Apply the saved colour theme before first paint. Only a theme name is stored.
     try { var t = localStorage.getItem('anon-theme'); if (t && /^[a-z]{2,12}$/.test(t)) document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
-  <link rel="stylesheet" href="styles.css?v=20261004c" />
+  <link rel="stylesheet" href="styles.css?v=20261004d" />
   <!-- Redacted-bubble favicon -->
   <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%238B5CFF'/><stop offset='.55' stop-color='%23FF4FA3'/><stop offset='1' stop-color='%23FF9147'/></linearGradient></defs><path d='M20 6h24a14 14 0 0 1 14 14v12a14 14 0 0 1-14 14H28L15 57V45.2A14 14 0 0 1 6 32V20A14 14 0 0 1 20 6z' fill='url(%23g)'/><rect x='15' y='17' width='34' height='8' rx='2' fill='%230A0614'/><rect x='15' y='29' width='21' height='6' rx='3' fill='white'/></svg>" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -105,7 +105,7 @@
       <div class="field">
         <label for="room-input">Room code</label>
         <div class="room-row">
-          <input id="room-input" type="text" maxlength="12" autocomplete="off" spellcheck="false" placeholder="e.g. K7P2QX" />
+          <input id="room-input" type="text" maxlength="12" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" placeholder="e.g. K7P2QX" />
           <button id="gen-btn" type="button" title="Generate new code" aria-label="Generate new code">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>
@@ -125,7 +125,7 @@
 
       <div class="field">
         <label for="name-input">Your name <span style="opacity:.6;font-weight:400;text-transform:none;letter-spacing:0;">(optional, temporary)</span></label>
-        <input id="name-input" type="text" maxlength="24" autocomplete="off" placeholder="Anonymous" />
+        <input id="name-input" type="text" maxlength="24" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="Anonymous" />
         <small>Only your peers see this. It is erased when you leave.</small>
       </div>
 
@@ -249,7 +249,7 @@
         <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M16.5 6.5L9.4 13.6a3 3 0 1 0 4.2 4.3l8.5-8.5a5 5 0 1 0-7.1-7.1L6.5 10.8a7 7 0 1 0 9.9 9.9l6.4-6.4-1.4-1.4-6.4 6.4a5 5 0 1 1-7.1-7.1L16.5 4a3 3 0 0 1 4.3 4.3l-8.5 8.5a1 1 0 0 1-1.5-1.5L17.9 8z"/></svg>
       </button>
       <input id="file-input" type="file" multiple style="display:none" />
-      <input id="msg-input" type="text" placeholder="Write a message…" maxlength="4000" disabled />
+      <input id="msg-input" type="text" placeholder="Write a message…" maxlength="4000" autocomplete="off" enterkeyhint="send" disabled />
       <button id="mic-btn" type="button" class="icon-btn composer-icon" title="Hold to record voice message" disabled>
         <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11z"/></svg>
       </button>
@@ -387,6 +387,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20261004c" type="module"></script>
+  <script src="app.js?v=20261004d" type="module"></script>
 </body>
 </html>
