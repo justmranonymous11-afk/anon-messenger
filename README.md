@@ -5,11 +5,13 @@ An anonymous, end-to-end encrypted messenger with **text chat** and **audio/vide
 ## Features
 
 - **Text chat** over WebRTC `DataChannel`, with every message also wrapped in **AES-GCM 256** using a key derived from **ECDH P-256 → HKDF/SHA-256** between the two peers.
-- **Audio & video calls** over WebRTC, natively encrypted by the browser with **DTLS-SRTP**.
+- **Audio & video calls** over WebRTC, natively encrypted by the browser with **DTLS-SRTP**. Nothing from your mic or camera is sent until the other person accepts, and an incoming call is never played before you answer.
 - **Anonymous by design**: no signup, no phone number, no email. Just a 6-character room code.
 - **Zero-knowledge server**: the Node.js signaling server only relays opaque WebRTC handshake payloads. It cannot decrypt messages or media.
 - **No persistence**: rooms only live in server memory while the two peers are connected. Messages live only in the browser tab and are wiped on disconnect.
 - **Safety number**: both peers see the same 24-digit safety number derived from the shared secret, so they can verbally verify they aren't being MITM'd.
+- **Replies, quotes & edits**: swipe right, hover, or long-press a message to reply; edit your own messages (or press ↑ in an empty composer). Quoted snippets travel encrypted, and a peer can only edit messages they sent.
+- **Colour themes**: Neon, Ocean, Sunset, Toxic, Candy and Ghost, picked on the join screen or in your profile. Only the theme name is kept in the browser (`localStorage`); no messages or identities are ever stored.
 
 ## Run it
 
@@ -66,7 +68,8 @@ anon-messenger/
     ├── index.html       # App shell served at /app
     ├── styles.css       # App theme (violet / pink / orange + lime accents)
     ├── app.js           # WebRTC + ECDH + AES-GCM client logic
-    └── fonts/           # Self-hosted OFL fonts (no third-party requests)
+    ├── fonts/           # Self-hosted OFL fonts (no third-party requests)
+    └── *.png            # App icons (regenerate with `node scripts/make-icons.js`)
 ```
 
 ## Notes

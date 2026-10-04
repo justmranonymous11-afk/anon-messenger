@@ -18,8 +18,8 @@ self.addEventListener('push', (e) => {
   e.waitUntil(self.registration.showNotification(data.title || 'Anon Messenger', {
     body: data.body || 'New message',
     tag,
-    icon: '/icon-192.svg',
-    badge: '/icon-192.svg',
+    icon: '/icon-192.png',
+    badge: '/badge-72.png',
     data: { room: data.room || '' },
     renotify: true,
   }));

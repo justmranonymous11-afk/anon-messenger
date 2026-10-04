@@ -11,7 +11,9 @@
  *  - No identifiers are sent. No persistence. No logs.
  *
  * In-band protocol (after AES-GCM unwrap, all messages are JSON):
- *   {t:'msg',      id, p:{iv,ct}}           encrypted text message
+ *   {t:'msg',      id, p:{iv,ct}, rp?:{iv,ct}}  encrypted text message; rp = encrypted
+ *                                           JSON reply ref {id, by, n, k, s} when quoting
+ *   {t:'msg-edit', id, p:{iv,ct}}           replace the text of the sender's own message
  *   {t:'msg-del',  id}                      delete a message for everyone
  *   {t:'typing',  on: bool}                typing indicator
  *   {t:'read',    id}                      read receipt for message id
@@ -82,16 +84,20 @@
     }
   }
 
+  function fadeOutLoading() {
+    const s = $('loading-screen');
+    if (!s || s.classList.contains('hidden')) return;
+    s.classList.add('fadeout');
+    setTimeout(() => { s.classList.add('hidden'); s.classList.remove('fadeout'); }, 450);
+  }
+
   function hideLoading(delay = 300) {
     clearTimeout(_loadFallback);
+    // Already in the chat (e.g. we were waiting alone) — don't flash the loader back up.
+    if ($('loading-screen')?.classList.contains('hidden')) return;
     setTimeout(() => {
       showLoading('Secure channel established', 100);
-      setTimeout(() => {
-        const s = $('loading-screen');
-        if (!s) return;
-        s.classList.add('fadeout');
-        setTimeout(() => { s.classList.add('hidden'); s.classList.remove('fadeout'); }, 450);
-      }, 350);
+      setTimeout(fadeOutLoading, 350);
     }, delay);
   }
 
@@ -228,6 +234,8 @@
     screenStream: null,
     callType: null,
     callActive: false,
+    remoteStream: null,       // incoming call media; only played once the call is accepted
+    heldTracks: [],           // [sender, track] pairs the caller holds back until accepted
     sharingScreen: false,
     remoteSharingScreen: false,
     callTimerStart: 0,
@@ -490,10 +498,7 @@
         updateModeIndicator();
         const existing = Array.isArray(msg.peers) ? msg.peers : [];
         if (existing.length === 0) {
-          showLoading('Waiting for the other person…', 55, true);
-          showSystemMessage(state.roomMode === 'group'
-            ? 'Group room created. Waiting for others to join…'
-            : 'Waiting for the other person to join…');
+          showLoading('Room ready', 100);
           setStatus('waiting', false);
         } else {
           showLoading('Establishing peer connection…', 65);
@@ -782,14 +787,13 @@
       console.log(`[pc:${peerId}] ontrack kind=${e.track.kind}`);
       // In 1-on-1 calls only (current implementation). Group video = future.
       if (peerCount() > 1) return;
-      const remoteVideo = $('remote-video');
-      if (!remoteVideo.srcObject) remoteVideo.srcObject = new MediaStream();
-      const ms = remoteVideo.srcObject;
+      if (!state.remoteStream) state.remoteStream = new MediaStream();
+      const ms = state.remoteStream;
       ms.getTracks().filter(t => t.kind === e.track.kind).forEach(t => ms.removeTrack(t));
       ms.addTrack(e.track);
-      // Force playback (audio elements with display:none still play audio,
-      // but Safari is picky about autoplay until there's interaction).
-      remoteVideo.play().catch(() => {});
+      // Never play the other side while the call is still ringing — only once
+      // it has been accepted (see attachRemoteMedia).
+      if (state.callActive) attachRemoteMedia();
     };
 
     peer.pc.onnegotiationneeded = async () => {
@@ -933,7 +937,8 @@
       switch (msg.t) {
         case 'msg': {
           const text = await decryptText(peer.sessionKey, msg.p);
-          renderMessage({ id: msg.id, kind: 'text', text, from: peer }, 'in');
+          const reply = msg.rp ? await decodeReplyRef(peer, msg.rp) : null;
+          renderMessage({ id: msg.id, kind: 'text', text, from: peer, reply }, 'in');
           notifyIncoming(peer, text.length > 80 ? text.slice(0, 77) + '…' : text);
           return;
         }
@@ -946,6 +951,17 @@
           const blob = new Blob([bytes], { type: msg.mime || 'audio/webm' });
           renderMessage({ id: msg.id, kind: 'audio', audioUrl: URL.createObjectURL(blob), duration: msg.dur, from: peer }, 'in');
           notifyIncoming(peer, 'Voice message');
+          return;
+        }
+        case 'msg-edit': {
+          if (typeof msg.id !== 'string') return;
+          const el = bubbleById(msg.id);
+          // Only the original sender may edit, and only their text messages.
+          if (!el || !el.classList.contains('in') || el.classList.contains('deleted')
+              || el.dataset.from !== peer.id || el.dataset.kind !== 'text') return;
+          const text = await decryptText(peer.sessionKey, msg.p);
+          if (!text || text.length > 4000) return;
+          applyEdit(el, text);
           return;
         }
         case 'msg-del':
@@ -1045,12 +1061,14 @@
           if (peer.id !== state.callPeerId) return;
           onCallDeclined();
           return;
-        case 'call-end':
+        case 'call-end': {
           console.log('[call] received call-end from', peer.id);
           if (peer.id !== state.callPeerId) return;
+          const wasActive = state.callActive;
           teardownCall();
-          showSystemMessage('Call ended.');
+          if (wasActive) showSystemMessage('Call ended.');
           return;
+        }
         case 'call-screen':
           if (peer.id !== state.callPeerId) return;
           state.remoteSharingScreen = !!msg.on;
@@ -1209,14 +1227,18 @@
   // Encrypt the same plaintext separately for each peer (pairwise keys),
   // then send the corresponding ciphertext to each peer.
   // Returns the number of peers we delivered to.
-  async function dcBroadcastEncryptedText(plaintext, baseMessage) {
+  // `extra` maps field name -> plaintext string; each is encrypted per peer too.
+  async function dcBroadcastEncryptedText(plaintext, baseMessage, extra = null) {
     let sent = 0;
     for (const peer of state.peers.values()) {
       if (!peerTransportReady(peer)) continue;
-      const p = await encryptText(peer.sessionKey, plaintext);
-      if (dcSendTo(peer, { ...baseMessage, p })) sent++;
+      const out = { ...baseMessage, p: await encryptText(peer.sessionKey, plaintext) };
+      if (extra) {
+        for (const [k, v] of Object.entries(extra)) out[k] = await encryptText(peer.sessionKey, v);
+      }
+      if (dcSendTo(peer, out)) sent++;
     }
-    if (sent > 0 && baseMessage.t && !['typing', 'presence', 'read'].includes(baseMessage.t)) {
+    if (sent > 0 && baseMessage.t && !['typing', 'presence', 'read', 'msg-edit'].includes(baseMessage.t)) {
       sendPushNudge();
     }
     return sent;
@@ -1482,6 +1504,7 @@
   // - 1 peer (1-on-1): show that peer's avatar + name
   // - 2+ peers (group): show stack of avatars + "Group · N peers"
   function updateHeaderForPeers() {
+    updateWaitingCard();
     const nameEl = document.querySelector('.peer-name');
     const avEl = $('peer-avatar');
     const statusEl = $('peer-status');
@@ -1603,6 +1626,65 @@
   function closeProfileDialog() { $('profile-dialog').classList.add('hidden'); }
 
   // ===========================================================
+  // Colour themes — only the theme name is kept (localStorage), nothing else
+  // ===========================================================
+  const THEMES = [
+    { id: 'neon',   name: 'Neon',   colors: ['#8B5CFF', '#FF4FA3', '#FF9147'], ink: '#0A0614' },
+    { id: 'ocean',  name: 'Ocean',  colors: ['#4A7BFF', '#1FC8FF', '#3DFFC8'], ink: '#050B18' },
+    { id: 'sunset', name: 'Sunset', colors: ['#FF4D6D', '#FF8A3D', '#FFD23F'], ink: '#140709' },
+    { id: 'toxic',  name: 'Toxic',  colors: ['#1FD67A', '#9BFF3D', '#E9FF5C'], ink: '#050F0A' },
+    { id: 'candy',  name: 'Candy',  colors: ['#FF6AD5', '#C774E8', '#94D0FF'], ink: '#110A18' },
+    { id: 'ghost',  name: 'Ghost',  colors: ['#FFFFFF', '#C9C9D6', '#8E8EA3'], ink: '#09090C' },
+  ];
+
+  function applyTheme(id, save = true) {
+    const t = THEMES.find(x => x.id === id) || THEMES[0];
+    if (t.id === 'neon') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = t.id;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t.ink);
+    document.querySelectorAll('.theme-swatch').forEach(b => {
+      const on = b.dataset.theme === t.id;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    document.querySelectorAll('.theme-name').forEach(el => { el.textContent = t.name; });
+    if (save) { try { localStorage.setItem('anon-theme', t.id); } catch { /* private mode */ } }
+  }
+
+  function buildThemePickers() {
+    document.querySelectorAll('.theme-picker').forEach(box => {
+      box.innerHTML = '';
+      THEMES.forEach((t, i) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'theme-swatch';
+        b.dataset.theme = t.id;
+        b.title = t.name;
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-label', `${t.name} theme`);
+        b.style.setProperty('--sw', `linear-gradient(135deg, ${t.colors.join(', ')})`);
+        b.style.setProperty('--sw-ink', t.ink);
+        b.addEventListener('click', () => applyTheme(t.id));
+        // Arrow keys move between swatches, like a native radio group
+        b.addEventListener('keydown', (e) => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+          if (!step) return;
+          e.preventDefault();
+          const next = THEMES[(i + step + THEMES.length) % THEMES.length];
+          applyTheme(next.id);
+          box.querySelector(`[data-theme="${next.id}"]`)?.focus();
+        });
+        box.appendChild(b);
+      });
+    });
+    let saved = null;
+    try { saved = localStorage.getItem('anon-theme'); } catch { /* private mode */ }
+    applyTheme(saved || 'neon', false);
+  }
+  buildThemePickers();
+
+  // ===========================================================
   // UI rendering
   // ===========================================================
   function showScreen(id) {
@@ -1629,6 +1711,7 @@
       if (p.typingUntil > now) typingPeers.push(p);
       else if (peerAppearsOnline(p)) onlineCount++;
     }
+    updateTypingBubble(typingPeers);
     if (peerCount() === 0) {
       setStatus('waiting', false);
       return;
@@ -1806,6 +1889,11 @@
     div.className = `bubble ${direction}`;
     div.dataset.id = m.id;
     div.dataset.kind = m.kind;
+    if (direction === 'in' && m.from) {
+      div.dataset.from = m.from.id;
+      div.dataset.fromName = (m.from.profile.name || '').trim();
+    }
+    if (m.name) div.dataset.name = m.name;
     // Sender label for group-mode incoming messages.
     let senderHeader = '';
     if (direction === 'in' && isGroup() && peerCount() >= 1 && m.from) {
@@ -1814,7 +1902,7 @@
     }
     if (m.kind === 'text') {
       div.dataset.text = m.text;
-      div.innerHTML = `${senderHeader}${linkify(markdownify(escapeHtml(m.text)))}${bubbleMetaHtml(direction)}`;
+      div.innerHTML = `${senderHeader}${quoteHtml(m.reply)}<span class="msg-text">${linkify(markdownify(escapeHtml(m.text)))}</span>${bubbleMetaHtml(direction)}`;
     } else if (m.kind === 'video') {
       div.classList.add('video', 'image');
       div.innerHTML = `
@@ -1840,6 +1928,7 @@
       wireFilePreview(div, { ...m, previewKind: 'pdf' });
     } else if (m.kind === 'sticker') {
       div.classList.add('sticker');
+      div.dataset.sticker = m.sticker;
       div.innerHTML = `${senderHeader}<div class="sticker-emoji">${escapeHtml(m.sticker)}</div>${bubbleMetaHtml(direction)}`;
     } else if (m.kind === 'audio') {
       div.classList.add('audio');
@@ -1901,7 +1990,17 @@
         </div>`;
     }
     attachContextMenu(div);
-    wrap.appendChild(div);
+    // Group consecutive messages from the same sender (within 3 minutes)
+    div.dataset.ts = String(Date.now());
+    const prev = lastChatNode(wrap);
+    if (prev && prev.classList.contains(direction) && !prev.classList.contains('system')
+        && !prev.classList.contains('deleted')
+        && (prev.dataset.from || '') === (div.dataset.from || '')
+        && Date.now() - Number(prev.dataset.ts || 0) < 180000) {
+      prev.classList.add('grp-next');
+      div.classList.add('grp-prev');
+    }
+    appendToChat(div);
     smartScroll();
     if (direction === 'in' && m.id) queueReadReceipt(m.id);
   }
@@ -1954,23 +2053,280 @@
     });
   }
 
+  // Status lines that supersede each other share a key, so they update in
+  // place instead of stacking up (e.g. relay → direct "secure channel ready").
+  function systemKey(text) {
+    if (/^Secure channel ready/.test(text)) return 'secure';
+    if (/^(Reconnecting|Back online)/.test(text)) return 'reconnect';
+    return text;
+  }
+
   function showSystemMessage(text) {
     const wrap = $('messages');
+    const key = systemKey(text);
+    // Look back through the trailing run of status lines (no chat in between).
+    for (let n = lastChatNode(wrap); n && n.classList.contains('system'); n = prevChatNode(n)) {
+      if (n.dataset.key === key) {
+        n.textContent = text;
+        smartScroll(true);
+        return;
+      }
+    }
     const div = document.createElement('div');
     div.className = 'bubble system';
+    div.dataset.key = key;
     div.textContent = text;
-    wrap.appendChild(div);
+    appendToChat(div);
     smartScroll(true); /* system messages always scroll — they're status, not chat */
   }
 
+  // The waiting card and typing bubble always sit at the end of the list.
+  const isFloater = (n) => n.classList.contains('waiting-card') || n.classList.contains('typing-bubble');
+  function prevChatNode(n) {
+    let p = n.previousElementSibling;
+    while (p && isFloater(p)) p = p.previousElementSibling;
+    return p;
+  }
+  function lastChatNode(wrap) {
+    let n = wrap.lastElementChild;
+    while (n && isFloater(n)) n = n.previousElementSibling;
+    return n;
+  }
+  function appendToChat(el) {
+    const wrap = $('messages');
+    const floater = wrap.querySelector(':scope > .waiting-card, :scope > .typing-bubble');
+    wrap.insertBefore(el, floater);
+  }
+
+  // ---- "Waiting for someone" card (shown while you're alone in the room) ----
+  function updateWaitingCard() {
+    const wrap = $('messages');
+    let card = wrap.querySelector(':scope > .waiting-card');
+    const alone = state.inChat && peerCount() === 0 && !!state.room;
+    if (!alone) { card?.remove(); return; }
+    if (card) return;
+    card = document.createElement('div');
+    card.className = 'waiting-card';
+    const tiles = Array.from(state.room).map(ch => `<span>${escapeHtml(ch)}</span>`).join('');
+    const group = state.roomMode === 'group';
+    card.innerHTML = `
+      <div class="wc-radar" aria-hidden="true"><i></i><i></i><i></i>
+        <svg width="34" height="34"><use href="#anon-mark"/></svg></div>
+      <div class="wc-title">${group ? 'Waiting for others to join' : 'Waiting for someone to join'}</div>
+      <div class="wc-sub">${group ? 'Up to 4 more people can join with this code.' : 'Send them this code — they enter it on their device.'}</div>
+      <div class="wc-code" aria-label="Room code ${escapeHtml(state.room)}">${tiles}</div>
+      <div class="wc-actions">
+        <button type="button" class="wc-btn wc-share">Share invite</button>
+        <button type="button" class="wc-btn wc-copy">Copy code</button>
+      </div>`;
+    card.querySelector('.wc-share').addEventListener('click', () => shareInvite(state.room));
+    card.querySelector('.wc-copy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(state.room); toast('Room code copied'); }
+      catch { toast('Code: ' + state.room); }
+    });
+    wrap.appendChild(card);
+    smartScroll(true);
+  }
+
+  // ---- In-chat typing bubble ----
+  let typingExpiryTimer = null;
+  function updateTypingBubble(typingPeers) {
+    const wrap = $('messages');
+    let el = wrap.querySelector(':scope > .typing-bubble');
+    clearTimeout(typingExpiryTimer);
+    if (!typingPeers.length) { el?.remove(); return; }
+    // Re-check when the newest typing signal expires, in case "stopped typing" never arrives.
+    const soonest = Math.min(...typingPeers.map(p => p.typingUntil));
+    typingExpiryTimer = setTimeout(updatePresenceUI, Math.max(50, soonest - Date.now() + 50));
+    const label = isGroup()
+      ? typingPeers.map(p => (p.profile.name || '').trim() || 'Someone').slice(0, 2).join(', ')
+      : '';
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'typing-bubble';
+      el.setAttribute('aria-hidden', 'true');
+      wrap.appendChild(el);
+      if (isNearBottom(wrap)) wrap.scrollTop = wrap.scrollHeight;
+    }
+    el.innerHTML = `${label ? `<span class="tb-name">${escapeHtml(label)}</span>` : ''}<span class="tb-dots"><i></i><i></i><i></i></span>`;
+  }
+
   function markMessageDeleted(id) {
-    const el = document.querySelector(`.bubble[data-id="${CSS.escape(id)}"]`);
+    if (typeof id !== 'string') return;
+    scrubQuotes(id);
+    const el = bubbleById(id);
     if (!el) return;
     messageReactions.delete(id);
     el.classList.remove('sticker','audio','image','file');
     el.classList.add('deleted');
     el.innerHTML = `<span style="opacity:.7">Message deleted</span><span class="time">${nowTime()}</span>`;
   }
+
+  // ===========================================================
+  // Replies & edits
+  // ===========================================================
+  const REPLY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v5"/></svg>';
+  let composeMode = null; // null | { type: 'reply', id, ref } | { type: 'edit', id }
+
+  const bubbleById = (id) => document.querySelector(`.bubble[data-id="${CSS.escape(String(id))}"]`);
+
+  // Collapse whitespace and cut to `max` characters without splitting emoji.
+  function clip(s, max = 140) {
+    const chars = Array.from(String(s).replace(/\s+/g, ' ').trim());
+    return chars.length > max ? chars.slice(0, max).join('') + '…' : chars.join('');
+  }
+
+  function displayNameFor(id, fallback) {
+    if (id && id === state.myId) return 'You';
+    const p = id ? state.peers.get(id) : null;
+    const n = p && p.profile.name && p.profile.name.trim();
+    return n || fallback || 'Anonymous';
+  }
+
+  // Short plain-text description of any bubble, used inside quotes.
+  function snippetOf(el) {
+    switch (el.dataset.kind) {
+      case 'text':    return clip(el.dataset.text || '');
+      case 'sticker': return `Sticker ${el.dataset.sticker || ''}`.trim();
+      case 'audio':   return '🎙️ Voice message';
+      case 'image':   return '📷 Photo';
+      case 'video':   return '🎬 Video';
+      default:        return `📎 ${clip(el.dataset.name || 'File', 60)}`;
+    }
+  }
+
+  function quoteHtml(r) {
+    if (!r) return '';
+    const name = displayNameFor(r.by, r.n);
+    // In groups, colour the quote like that person's name.
+    const hue = isGroup()
+      ? ` style="--qc:hsl(${senderHue(name === 'You' ? (state.myProfile.name || '').trim() || 'Anonymous' : name)} 100% 74%)"`
+      : '';
+    return `<button type="button" class="quote" data-ref="${escapeHtml(r.id)}"${hue}>`
+      + `<span class="quote-name">${escapeHtml(name)}</span>`
+      + `<span class="quote-text">${escapeHtml(r.s || '')}</span></button>`;
+  }
+
+  // Decrypt and sanity-check a peer's reply reference.
+  async function decodeReplyRef(peer, rp) {
+    try {
+      const r = JSON.parse(await decryptText(peer.sessionKey, rp));
+      if (!r || typeof r.id !== 'string') return null;
+      const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+      const ref = { id: str(r.id, 64), by: str(r.by, 64), n: str(r.n, 40), k: str(r.k, 16), s: clip(str(r.s, 400)) };
+      // If we have the quoted message, trust our own copy over the sender's description,
+      // so nobody can attribute invented words to a real message.
+      const local = bubbleById(ref.id);
+      if (local && !local.classList.contains('deleted')) {
+        ref.by = local.classList.contains('out') ? state.myId : (local.dataset.from || ref.by);
+        ref.n = local.classList.contains('out') ? (state.myProfile.name || '').trim() : (local.dataset.fromName || ref.n);
+        ref.k = local.dataset.kind;
+        ref.s = snippetOf(local);
+      }
+      return ref;
+    } catch { return null; }
+  }
+
+  function showComposeBar(mode, title, text) {
+    const bar = $('compose-bar');
+    bar.dataset.mode = mode;
+    $('compose-bar-title').textContent = title;
+    $('compose-bar-text').textContent = text;
+    bar.classList.remove('hidden');
+    $('chat-screen').classList.add('composing');
+    $('chat-screen').classList.toggle('editing', mode === 'edit');
+    smartScroll();
+  }
+
+  function cancelCompose() {
+    if (composeMode?.type === 'edit') $('msg-input').value = '';
+    composeMode = null;
+    $('compose-bar').classList.add('hidden');
+    $('chat-screen').classList.remove('composing', 'editing');
+  }
+
+  function startReply(el) {
+    if (!el || !el.dataset.id || el.classList.contains('deleted') || el.classList.contains('system')) return;
+    if (composeMode?.type === 'edit') cancelCompose();
+    const mine = el.classList.contains('out');
+    const by = mine ? state.myId : (el.dataset.from || '');
+    const n = mine ? (state.myProfile.name || '').trim() : (el.dataset.fromName || '');
+    const ref = { id: el.dataset.id, by, n, k: el.dataset.kind, s: snippetOf(el) };
+    composeMode = { type: 'reply', id: ref.id, ref };
+    showComposeBar('reply', `Replying to ${displayNameFor(by, n)}`, ref.s);
+    $('msg-input').focus();
+  }
+
+  function startEdit(el) {
+    if (!el || !el.classList.contains('out') || el.dataset.kind !== 'text' || el.classList.contains('deleted')) return;
+    composeMode = { type: 'edit', id: el.dataset.id };
+    showComposeBar('edit', 'Editing message', clip(el.dataset.text || ''));
+    const input = $('msg-input');
+    input.value = el.dataset.text || '';
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  async function submitEdit(text) {
+    const el = bubbleById(composeMode.id);
+    if (!el || el.classList.contains('deleted') || text === el.dataset.text) { cancelCompose(); return; }
+    const sent = await dcBroadcastEncryptedText(text, { t: 'msg-edit', id: el.dataset.id });
+    if (sent > 0) {
+      applyEdit(el, text);
+      cancelCompose();
+    } else {
+      toast('No peers connected');
+    }
+  }
+
+  function applyEdit(el, text) {
+    el.dataset.text = text;
+    const body = el.querySelector('.msg-text');
+    if (body) body.innerHTML = linkify(markdownify(escapeHtml(text)));
+    if (!el.querySelector('.edited-tag')) {
+      const tag = '<span class="edited-tag">edited</span>';
+      const meta = el.querySelector(':scope > .bubble-meta');
+      if (meta) meta.insertAdjacentHTML('afterbegin', tag);
+      else el.querySelector(':scope > .time')?.insertAdjacentHTML('afterend', tag);
+    }
+    document.querySelectorAll(`.quote[data-ref="${CSS.escape(el.dataset.id)}"] .quote-text`)
+      .forEach(q => { q.textContent = clip(text); });
+  }
+
+  // When a message is deleted, remove its words from every quote of it too.
+  function scrubQuotes(id) {
+    if (!id) return;
+    document.querySelectorAll(`.quote[data-ref="${CSS.escape(id)}"]`).forEach(q => {
+      q.classList.add('gone');
+      q.querySelector('.quote-text').textContent = 'Message deleted';
+    });
+    if (composeMode?.id === id) cancelCompose();
+  }
+
+  // Tap a quote to jump to the original message.
+  $('messages').addEventListener('click', (e) => {
+    const q = e.target.closest('.quote');
+    if (!q) return;
+    const target = bubbleById(q.dataset.ref);
+    if (!target || target.classList.contains('deleted')) { toast('Original message is gone'); return; }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('flash');
+    void target.offsetWidth;
+    target.classList.add('flash');
+    setTimeout(() => target.classList.remove('flash'), 1400);
+  });
+
+  $('compose-bar-close').addEventListener('click', () => { cancelCompose(); $('msg-input').focus(); });
+
+  $('msg-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && composeMode && ctxMenu.classList.contains('hidden')) {
+      cancelCompose();
+    } else if (e.key === 'ArrowUp' && !e.target.value && !composeMode) {
+      // Quick-edit your last text message
+      const mine = document.querySelectorAll('.bubble.out[data-kind="text"]:not(.deleted)');
+      if (mine.length) { e.preventDefault(); startEdit(mine[mine.length - 1]); }
+    }
+  });
 
   // ===========================================================
   // Context menu (right-click / long-press to delete)
@@ -1981,8 +2337,19 @@
   function attachContextMenu(bubble) {
     if (bubble.classList.contains('system')) return;
     let lastTap = 0;
-    bubble.addEventListener('dblclick', () => {
-      if (bubble.classList.contains('deleted')) return;
+    // Hover shortcut (pointer devices) for replying
+    const replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'bubble-reply';
+    replyBtn.title = 'Reply';
+    replyBtn.setAttribute('aria-label', 'Reply');
+    replyBtn.innerHTML = REPLY_ICON;
+    replyBtn.addEventListener('click', (e) => { e.stopPropagation(); startReply(bubble); });
+    bubble.appendChild(replyBtn);
+    // Swipe right to reply (touch)
+    let sx = 0, sy = 0, dx = 0, swiping = false;
+    bubble.addEventListener('dblclick', (e) => {
+      if (bubble.classList.contains('deleted') || e.target.closest('.quote, .bubble-reply')) return;
       toggleReaction(bubble.dataset.id, '❤️');
     });
     bubble.addEventListener('contextmenu', (e) => {
@@ -1992,13 +2359,25 @@
     // Long-press for touch devices; double-tap to ❤️
     let pressTimer = null;
     bubble.addEventListener('touchstart', (e) => {
+      const t0 = e.touches[0];
+      sx = t0.clientX; sy = t0.clientY; dx = 0; swiping = false;
+      bubble.style.transition = '';
       pressTimer = setTimeout(() => {
         const t = e.touches[0];
         openCtxMenu(bubble, t.clientX, t.clientY);
       }, 500);
     }, { passive: true });
-    bubble.addEventListener('touchend', () => {
+    bubble.addEventListener('touchend', (e) => {
       clearTimeout(pressTimer);
+      if (swiping) {
+        swiping = false;
+        bubble.style.transition = 'transform .2s cubic-bezier(.2,.9,.3,1.2)';
+        bubble.style.transform = '';
+        bubble.classList.remove('swipe-ready');
+        if (dx > 56) startReply(bubble);
+        return;
+      }
+      if (e.target.closest('.quote, .bubble-reply')) return;
       const now = Date.now();
       if (now - lastTap < 320) {
         if (!bubble.classList.contains('deleted')) toggleReaction(bubble.dataset.id, '❤️');
@@ -2007,7 +2386,17 @@
         lastTap = now;
       }
     });
-    bubble.addEventListener('touchmove', () => clearTimeout(pressTimer));
+    bubble.addEventListener('touchmove', (e) => {
+      clearTimeout(pressTimer);
+      if (bubble.classList.contains('deleted')) return;
+      const t = e.touches[0];
+      const mx = t.clientX - sx, my = t.clientY - sy;
+      if (!swiping && mx > 12 && mx > Math.abs(my) * 1.5) swiping = true;
+      if (!swiping) return;
+      dx = Math.max(0, Math.min(mx, 80));
+      bubble.style.transform = `translateX(${dx}px)`;
+      bubble.classList.toggle('swipe-ready', dx > 56);
+    }, { passive: true });
   }
 
   function openCtxMenu(el, x, y) {
@@ -2019,11 +2408,14 @@
     $('ctx-delete-me').style.display = deleted ? 'none' : '';
     $('ctx-copy').style.display = isText ? '' : 'none';
     $('ctx-react-row').style.display = deleted ? 'none' : '';
+    $('ctx-reply').style.display = deleted ? 'none' : '';
+    $('ctx-edit').style.display = (mine && isText && !deleted) ? '' : 'none';
     const delAll = $('ctx-delete-all');
     if (delAll) delAll.textContent = isGroup() ? 'Delete for everyone' : 'Delete for both';
-    ctxMenu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
-    ctxMenu.style.top = Math.min(y, window.innerHeight - 140) + 'px';
     ctxMenu.classList.remove('hidden');
+    const box = ctxMenu.getBoundingClientRect();
+    ctxMenu.style.left = Math.max(8, Math.min(x, window.innerWidth - box.width - 8)) + 'px';
+    ctxMenu.style.top = Math.max(8, Math.min(y, window.innerHeight - box.height - 8)) + 'px';
   }
   function closeCtxMenu() { ctxMenu.classList.add('hidden'); ctxTargetEl = null; }
   document.addEventListener('click', (e) => {
@@ -2033,6 +2425,7 @@
 
   $('ctx-delete-me').addEventListener('click', () => {
     if (!ctxTargetEl) return;
+    scrubQuotes(ctxTargetEl.dataset.id);
     ctxTargetEl.remove();
     closeCtxMenu();
   });
@@ -2043,6 +2436,17 @@
     dcBroadcastPlain({ t: 'msg-del', id });
     markMessageDeleted(id);
     closeCtxMenu();
+  });
+
+  $('ctx-reply').addEventListener('click', () => {
+    const el = ctxTargetEl;
+    closeCtxMenu();
+    startReply(el);
+  });
+  $('ctx-edit').addEventListener('click', () => {
+    const el = ctxTargetEl;
+    closeCtxMenu();
+    startEdit(el);
   });
 
   $('ctx-copy').addEventListener('click', async () => {
@@ -2097,11 +2501,15 @@
     if (!text || !anyPeerReady()) return;
     sendTyping(false);
     try {
+      if (composeMode?.type === 'edit') { await submitEdit(text); return; }
+      const reply = composeMode?.type === 'reply' ? composeMode.ref : null;
       const id = randId();
-      const sent = await dcBroadcastEncryptedText(text, { t: 'msg', id });
+      const sent = await dcBroadcastEncryptedText(text, { t: 'msg', id },
+        reply ? { rp: JSON.stringify(reply) } : null);
       if (sent > 0) {
-        renderMessage({ id, kind: 'text', text }, 'out');
+        renderMessage({ id, kind: 'text', text, reply }, 'out');
         input.value = '';
+        cancelCompose();
       } else {
         toast('No peers connected');
       }
@@ -2342,6 +2750,14 @@
     setBanner('Verifying secure channel…', 'info');
     setStatus('connecting…', false);
     updateModeIndicator();
+    if (peerCount() === 0) {
+      // Nobody here yet: get the loader out of the way so the invite can be shared right away.
+      clearTimeout(_loadFallback);
+      _loadFallback = setTimeout(fadeOutLoading, 600);
+      updateWaitingCard();
+      setStatus('waiting', false);
+      setBanner('Room open — share the code to start an encrypted chat', 'info');
+    }
     clearTimeout(state._connectTimeout);
     state._connectTimeout = setTimeout(() => {
       if (!anyPeerReady()) {
@@ -2479,6 +2895,7 @@
     });
     updateReconnectBanner();
     $('messages').innerHTML = '';
+    cancelCompose();
     $('msg-input').value = '';
     $('name-input').value = '';
     disableComposer();
@@ -2659,8 +3076,8 @@
     state.callType = type;
     state.callPeerId = peer.id;
     try {
-      addLocalTracks(peer);
-      console.log('[call] tracks added, awaiting renegotiation');
+      addLocalTracks(peer, { hold: true });
+      console.log('[call] media lines added (held until accepted), awaiting renegotiation');
     } catch (e) {
       console.error('[call] addLocalTracks failed', e);
       toast('Could not start call (track error)');
@@ -2677,18 +3094,51 @@
     showCallOverlay('Ringing…');
   }
 
-  function addLocalTracks(peer) {
+  // With `hold`, the media lines are negotiated while ringing but no track is
+  // attached to the senders, so nothing leaves this device until the other
+  // side accepts (releaseHeldTracks).
+  function addLocalTracks(peer, { hold = false } = {}) {
     if (!state.localStream || !peer.pc) return;
     const localVideo = $('local-video');
     localVideo.srcObject = state.localStream;
     state.senders.forEach(s => { try { peer.pc.removeTrack(s); } catch {} });
     state.senders = [];
     state.videoSender = null;
+    state.heldTracks = [];
     state.localStream.getTracks().forEach(track => {
-      const sender = peer.pc.addTrack(track, state.localStream);
+      let sender;
+      if (hold) {
+        sender = peer.pc.addTransceiver(track.kind, {
+          direction: 'sendrecv', streams: [state.localStream],
+        }).sender;
+        state.heldTracks.push([sender, track]);
+      } else {
+        sender = peer.pc.addTrack(track, state.localStream);
+      }
       state.senders.push(sender);
       if (track.kind === 'video') state.videoSender = sender;
     });
+  }
+
+  async function releaseHeldTracks() {
+    const held = state.heldTracks;
+    state.heldTracks = [];
+    await Promise.all(held.map(([sender, track]) =>
+      sender.replaceTrack(track).catch(e => console.warn('[call] replaceTrack failed', e))));
+  }
+
+  // Start playing the other side's audio/video. Only called once a call is active.
+  function attachRemoteMedia() {
+    const rv = $('remote-video');
+    if (!rv || !state.remoteStream) return;
+    if (rv.srcObject !== state.remoteStream) rv.srcObject = state.remoteStream;
+    rv.play().catch(() => {});
+  }
+
+  function dropRemoteMedia() {
+    state.remoteStream = null;
+    const rv = $('remote-video');
+    if (rv) rv.srcObject = null;
   }
 
   function showCallOverlay(status) {
@@ -2723,6 +3173,7 @@
     showCallOverlay('Connected');
     startCallTimer();
     state.callActive = true;
+    attachRemoteMedia();
   });
 
   $('decline-btn').addEventListener('click', () => {
@@ -2731,12 +3182,16 @@
     if (peer) dcSendTo(peer, { t: 'call-decline' });
     state.callType = null;
     state.callPeerId = null;
+    dropRemoteMedia();
   });
 
   function onCallAccepted() {
+    if (state.callActive || !state.localStream) return;
     $('call-status').textContent = 'Connected';
     startCallTimer();
     state.callActive = true;
+    releaseHeldTracks();
+    attachRemoteMedia();
   }
   function onCallDeclined() { toast('Call declined'); teardownCall(); }
 
@@ -2752,6 +3207,9 @@
   }
 
   function teardownCall() {
+    const wasRinging = !$('incoming-call').classList.contains('hidden');
+    $('incoming-call').classList.add('hidden');
+    if (wasRinging) showSystemMessage('Missed call.');
     stopScreenShare(false);
     clearInterval(state.callTimerInt);
     state.callTimerInt = null;
@@ -2768,9 +3226,10 @@
     }
     state.senders = [];
     state.videoSender = null;
+    state.heldTracks = [];
     state.callPeerId = null;
     const lv = $('local-video'); lv.srcObject = null;
-    const rv = $('remote-video'); rv.srcObject = null;
+    dropRemoteMedia();
     hideCallOverlay();
   }
 
